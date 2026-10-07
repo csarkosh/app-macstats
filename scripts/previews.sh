@@ -20,8 +20,9 @@ WAIT=185
 [ -x "$APP" ] || { echo "previews.sh: build the app first: make app" >&2; exit 1; }
 mkdir -p "$OUT"
 
-# A helper that prints the id of MacStats' tallest window (an open panel), and the menu
-# bar span its status items cover, in points: "<left> <width>".
+# A helper that prints the id of MacStats' tallest window (an open panel); with "items",
+# where the status items start, the screen's width and where the hero's bar starts, in
+# points; with "wallpaper", the id of this Space's wallpaper window.
 HELPER="$(mktemp -d)/windows"
 cat > "$HELPER.swift" <<'EOF'
 import Cocoa
@@ -30,7 +31,12 @@ let bounds = { (window: [String: Any]) -> (x: Double, width: Double, height: Dou
     guard let b = window["kCGWindowBounds"] as? [String: Double], let x = b["X"], let w = b["Width"], let h = b["Height"] else { return nil }
     return (x, w, h)
 }
-if CommandLine.arguments.count > 1 {
+if CommandLine.arguments.count > 1 && CommandLine.arguments[1] == "wallpaper" {
+    // macOS's wallpaper window, behind everything, so a capture of it shows nothing else.
+    guard let paper = windows.first(where: { ($0["kCGWindowOwnerName"] as? String) == "Dock"
+        && (($0["kCGWindowName"] as? String) ?? "").hasPrefix("Wallpaper") }), let id = paper["kCGWindowNumber"] as? Int else { exit(1) }
+    print(id)
+} else if CommandLine.arguments.count > 1 {
     // The status items: layer 25, named by their autosave names (MacStatsCPU …) on macOS 26.
     // Printed: where the group starts, the screen's width, and where the hero's bar starts, in points.
     let items = windows.filter { ($0["kCGWindowLayer"] as? Int) == 25 && (($0["kCGWindowName"] as? String) ?? "").hasPrefix("MacStats") }
@@ -70,9 +76,14 @@ for look in dark light; do
   # under its item (the dark run; the bar's look is the system's).
   if [ "$look" = dark ] && span="$("$HELPER" items)"; then
     set -- $span
-    screencapture -x -R "$3,0,$(($2 - $3)),24" "$OUT/bar.png" \
-      && xcrun swift "$ROOT/scripts/compose-hero.swift" "$OUT/bar.png" "$OUT/cpu-dark.png" "$(($1 - $3))" "$OUT/menubar.png" 390 \
-      && rm -f "$OUT/bar.png" && echo "composed menubar"
+    screencapture -x -R "$3,0,$(($2 - $3)),24" "$OUT/bar.png"
+    paper="$("$HELPER" wallpaper)" && screencapture -x -o -l "$paper" "$OUT/wallpaper.png" || echo "previews.sh: no wallpaper window; using a gradient" >&2
+    if [ -f "$OUT/wallpaper.png" ]; then
+      xcrun swift "$ROOT/scripts/compose-hero.swift" "$OUT/bar.png" "$OUT/cpu-dark.png" "$(($1 - $3))" "$OUT/menubar.png" 390 "$OUT/wallpaper.png" "$3"
+    else
+      xcrun swift "$ROOT/scripts/compose-hero.swift" "$OUT/bar.png" "$OUT/cpu-dark.png" "$(($1 - $3))" "$OUT/menubar.png" 390
+    fi
+    rm -f "$OUT/bar.png" "$OUT/wallpaper.png" && echo "composed menubar"
   fi
   kill "$PID" 2>/dev/null || true
   sleep 1

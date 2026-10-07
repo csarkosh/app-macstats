@@ -1,13 +1,14 @@
 // Composes the README's hero: the top of a Mac screen, with the real menu bar across the
-// top, a wallpaper-like gradient below it (its colours taken from the bar, which is the
-// wallpaper seen through the bar), and a real panel dropped down under its item, as it
-// does when clicked. A bare strip of the bar never reads as a menu bar; the screen's top
+// top, the real wallpaper below it (captured from macOS's wallpaper window, which sits
+// behind every other window, so nothing covers it), and a real panel dropped down under
+// its item, as it does when clicked. Without a wallpaper, a gradient in the bar's colours. A bare strip of the bar never reads as a menu bar; the screen's top
 // edge, the system icons and the clock, and a panel beneath do.
 //
-//   swift scripts/compose-hero.swift <bar.png> <panel.png> <item x in points> <out.png> [<height in points>]
+//   swift scripts/compose-hero.swift <bar.png> <panel.png> <item x in points> <out.png> [<height in points> [<wallpaper.png> <bar x in points>]]
 //
 // bar.png is a 2x capture of the bar from the notch's edge to the screen's right edge;
-// item x is where the panel's item starts, in points from the bar's left edge. With a
+// item x is where the panel's item starts, in points from the bar's left edge; wallpaper.png
+// is a 2x capture of the whole wallpaper window and bar x where the bar's capture starts in it. With a
 // height, the image stops there and the panel fades out towards the bottom edge, a
 // landscape hero that shows the bar and the top of a dropdown; the full panels follow
 // in the README.
@@ -15,7 +16,7 @@
 import Cocoa
 
 let arguments = CommandLine.arguments
-guard arguments.count == 5 || arguments.count == 6, let itemX = Double(arguments[3]),
+guard [5, 6, 8].contains(arguments.count), let itemX = Double(arguments[3]),
       let bar = NSImage(contentsOfFile: arguments[1]), let panel = NSImage(contentsOfFile: arguments[2]),
       let barRep = bar.representations.first as? NSBitmapImageRep, let panelRep = panel.representations.first as? NSBitmapImageRep
 else {
@@ -30,7 +31,7 @@ let panelWidth = Double(panelRep.pixelsWide), panelHeight = Double(panelRep.pixe
 let gap = 3 * scale, margin = 28 * scale
 let width = barWidth
 let fullHeight = barHeight + gap + panelHeight + margin
-let height = arguments.count == 6 ? min(fullHeight, (Double(arguments[5]) ?? 0) * scale) : fullHeight
+let height = arguments.count >= 6 ? min(fullHeight, (Double(arguments[5]) ?? 0) * scale) : fullHeight
 let fades = height < fullHeight
 // The panel sits centred under its item (items are about 40 pt wide), kept inside the edge.
 var panelX = itemX * scale + 20 * scale - panelWidth / 2
@@ -58,9 +59,19 @@ let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(width), pixels
 NSGraphicsContext.saveGraphicsState()
 NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: out)
 let canvas = NSRect(x: 0, y: 0, width: width, height: height)
-// Left to right follows the bar; top to bottom darkens, as a wallpaper does under a menu bar.
-NSGradient(colors: [left, right])!.draw(in: canvas, angle: 0)
-NSGradient(colors: [darker(left, 0.55).withAlphaComponent(0.55), NSColor.clear])!.draw(in: canvas, angle: 90)
+if arguments.count == 8, let wallpaper = NSImage(contentsOfFile: arguments[6]), let barX = Double(arguments[7]),
+   let wallpaperRep = wallpaper.representations.first as? NSBitmapImageRep {
+    // The wallpaper's top edge from where the bar starts, as wide and tall as the canvas.
+    // NSImage measures `from` in its own points, not the capture's pixels.
+    let pointScale = wallpaper.size.width / Double(wallpaperRep.pixelsWide)
+    let from = NSRect(x: barX * scale * pointScale, y: wallpaper.size.height - height * pointScale,
+                      width: width * pointScale, height: height * pointScale)
+    wallpaper.draw(in: canvas, from: from, operation: .copy, fraction: 1)
+} else {
+    // Left to right follows the bar; top to bottom darkens, as a wallpaper does under a menu bar.
+    NSGradient(colors: [left, right])!.draw(in: canvas, angle: 0)
+    NSGradient(colors: [darker(left, 0.55).withAlphaComponent(0.55), NSColor.clear])!.draw(in: canvas, angle: 90)
+}
 // The bar at the top edge, as captured.
 bar.draw(in: NSRect(x: 0, y: height - barHeight, width: barWidth, height: barHeight), from: .zero, operation: .sourceOver, fraction: 1)
 // The panel under its item, with the shadow macOS gives a menu (the shadow follows the

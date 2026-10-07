@@ -201,7 +201,7 @@ feature is one file in `Sources/MacStats/` (`CPU.swift`, `GPU.swift`, `RAM.swift
 `Temp.swift`, `Disk.swift`), with `MenuKit.swift` for what the items and panels share and
 `HoverTip.swift` for the tooltips; `main.swift` starts the items and holds the command line. The
 screenshots above come from `scripts/previews.sh`; the one at the top is a composite of the real
-bar and the real CPU panel over a wallpaper-like gradient (`scripts/compose-hero.swift`). See [AGENTS.md](AGENTS.md) for how the pieces
+bar, the real wallpaper and the real CPU panel (`scripts/compose-hero.swift`). See [AGENTS.md](AGENTS.md) for how the pieces
 fit and how a release is made.
 
 ## Credits and licence
