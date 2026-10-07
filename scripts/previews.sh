@@ -32,10 +32,11 @@ let bounds = { (window: [String: Any]) -> (x: Double, width: Double, height: Dou
 }
 if CommandLine.arguments.count > 1 {
     // The status items: layer 25, named by their autosave names (MacStatsCPU …) on macOS 26.
+    // Printed: where the group starts, and the screen's width, in points.
     let items = windows.filter { ($0["kCGWindowLayer"] as? Int) == 25 && (($0["kCGWindowName"] as? String) ?? "").hasPrefix("MacStats") }
         .compactMap(bounds)
-    guard let left = items.map(\.x).min(), let right = items.map { $0.x + $0.width }.max() else { exit(1) }
-    print(Int(left), Int(right - left))
+    guard let left = items.map(\.x).min(), let screen = NSScreen.main?.frame.width else { exit(1) }
+    print(Int(left), Int(screen))
 } else {
     let panels = windows.filter { ($0["kCGWindowOwnerName"] as? String) == "MacStats" }
         .compactMap { window -> (id: Int, height: Double)? in
@@ -62,10 +63,11 @@ for look in dark light; do
     fi
     sleep 8
   done
-  # The menu bar group, from the items' own span (the dark run: the bar's look is the system's).
+  # The menu bar from a little left of the group to the screen's edge, so the system's own
+  # icons and the clock show it is the menu bar (the dark run; the bar's look is the system's).
   if [ "$look" = dark ] && span="$("$HELPER" items)"; then
     set -- $span
-    screencapture -x -R "$(($1 - 2)),0,$(($2 + 4)),24" "$OUT/menubar.png" && echo "captured menubar"
+    screencapture -x -R "$(($1 - 60)),0,$(($2 - $1 + 60)),24" "$OUT/menubar.png" && echo "captured menubar"
   fi
   kill "$PID" 2>/dev/null || true
   sleep 1

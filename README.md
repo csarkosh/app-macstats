@@ -2,7 +2,7 @@
 
 <p align="center">Five menu bar items for a Mac, each with a panel that explains it.</p>
 
-<p align="center"><img src="docs/previews/menubar.png" width="460" alt="The menu bar: CPU 13%, GPU 0%, RAM 85%, Temp 97°, Disk free 76 GB"></p>
+<p align="center"><img src="docs/previews/menubar.png" alt="The right side of a Mac's menu bar: CPU, GPU, RAM, Temp and Disk free, then the Wi-Fi, battery and clock"></p>
 
 <p align="center">
 <b>CPU</b> usage · <b>GPU</b> utilization · <b>RAM</b> in use · <b>Temp</b> of the hottest part · <b>Disk free</b> as Finder counts it
