@@ -2,7 +2,7 @@
 
 <p align="center">Five menu bar items for a Mac, each with a panel that explains it.</p>
 
-<p align="center"><img src="docs/previews/menubar.png" alt="The right side of a Mac's menu bar: CPU, GPU, RAM, Temp and Disk free, then the Wi-Fi, battery and clock"></p>
+<p align="center"><img src="docs/previews/menubar.png" alt="The top of a Mac's screen: the menu bar with CPU, GPU, RAM, Temp and Disk free beside the Wi-Fi, battery and clock, and the CPU panel dropped down under its item"></p>
 
 <p align="center">
 <b>CPU</b> usage · <b>GPU</b> utilization · <b>RAM</b> in use · <b>Temp</b> of the hottest part · <b>Disk free</b> as Finder counts it
@@ -200,7 +200,8 @@ The tests are a program rather than XCTest, which the Command Line Tools do not 
 feature is one file in `Sources/MacStats/` (`CPU.swift`, `GPU.swift`, `RAM.swift`,
 `Temp.swift`, `Disk.swift`), with `MenuKit.swift` for what the items and panels share and
 `HoverTip.swift` for the tooltips; `main.swift` starts the items and holds the command line. The
-screenshots above come from `scripts/previews.sh`. See [AGENTS.md](AGENTS.md) for how the pieces
+screenshots above come from `scripts/previews.sh`; the one at the top is a composite of the real
+bar and the real CPU panel over a wallpaper-like gradient (`scripts/compose-hero.swift`). See [AGENTS.md](AGENTS.md) for how the pieces
 fit and how a release is made.
 
 ## Credits and licence

@@ -32,11 +32,13 @@ let bounds = { (window: [String: Any]) -> (x: Double, width: Double, height: Dou
 }
 if CommandLine.arguments.count > 1 {
     // The status items: layer 25, named by their autosave names (MacStatsCPU …) on macOS 26.
-    // Printed: where the group starts, and the screen's width, in points.
+    // Printed: where the group starts, the screen's width, and where the hero's bar starts, in points.
     let items = windows.filter { ($0["kCGWindowLayer"] as? Int) == 25 && (($0["kCGWindowName"] as? String) ?? "").hasPrefix("MacStats") }
         .compactMap(bounds)
-    guard let left = items.map(\.x).min(), let screen = NSScreen.main?.frame.width else { exit(1) }
-    print(Int(left), Int(screen))
+    guard let left = items.map(\.x).min(), let screen = NSScreen.main else { exit(1) }
+    // Where the bar starts for the hero: the notch's right edge, or the screen's left edge.
+    let barStart = screen.auxiliaryTopRightArea?.minX ?? 0
+    print(Int(left), Int(screen.frame.width), Int(barStart))
 } else {
     let panels = windows.filter { ($0["kCGWindowOwnerName"] as? String) == "MacStats" }
         .compactMap { window -> (id: Int, height: Double)? in
@@ -63,11 +65,14 @@ for look in dark light; do
     fi
     sleep 8
   done
-  # The menu bar from a little left of the group to the screen's edge, so the system's own
-  # icons and the clock show it is the menu bar (the dark run; the bar's look is the system's).
+  # The hero: the bar from the notch's edge to the screen's edge (the system's own icons
+  # and the clock show it is the menu bar), composed over a gradient with the CPU panel
+  # under its item (the dark run; the bar's look is the system's).
   if [ "$look" = dark ] && span="$("$HELPER" items)"; then
     set -- $span
-    screencapture -x -R "$(($1 - 60)),0,$(($2 - $1 + 60)),24" "$OUT/menubar.png" && echo "captured menubar"
+    screencapture -x -R "$3,0,$(($2 - $3)),24" "$OUT/bar.png" \
+      && xcrun swift "$ROOT/scripts/compose-hero.swift" "$OUT/bar.png" "$OUT/cpu-dark.png" "$(($1 - $3))" "$OUT/menubar.png" 390 \
+      && rm -f "$OUT/bar.png" && echo "composed menubar"
   fi
   kill "$PID" 2>/dev/null || true
   sleep 1
