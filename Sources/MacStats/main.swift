@@ -10,6 +10,8 @@
 //   MacStats                                # runs the menu bar items
 //   MacStats --version                      # prints the app's version and exits
 //   MacStats --show-panel cpu|gpu|ram|temp|disk[,…]  # runs, opening those panels in turn, as clicks would
+//            [--after <s>] [--each <s>]      # (first after 1 s, then one every 2 s; for screenshots,
+//   MacStats --appearance dark|light        #  a wait for the charts to fill, and a forced appearance)
 //   MacStats --render cpu|gpu|ram|temp|disk out.png  # draws that menu bar item to a PNG and exits
 //                                           # (with --alert, Temp as it looks when hot)
 //   MacStats --write-icon <dir>.iconset     # draws the app icon at iconutil's sizes and exits
@@ -63,9 +65,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Every second, like Stats' CPU and GPU.
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
         timer?.tolerance = 0.2
-        // "--show-panel disk,temp" opens each in turn, two seconds apart, as clicks would.
+        // "--show-panel disk,temp" opens each in turn, two seconds apart, as clicks would;
+        // --after and --each change the wait and the gap (screenshots want full charts).
+        let after = Double(argument(after: "--after") ?? "") ?? 1
+        let each = Double(argument(after: "--each") ?? "") ?? 2
         for (index, which) in (argument(after: "--show-panel") ?? "").split(separator: ",").enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1 + 2 * Double(index)) { [unowned self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + after + each * Double(index)) { [unowned self] in
                 if which == "cpu", let button = cpu.button { cpuPanel.toggle(under: button) }
                 if which == "gpu", let button = gpu.button { gpuPanel.toggle(under: button) }
                 if which == "ram", let button = ram.button { ramPanel.toggle(under: button) }
@@ -239,6 +244,9 @@ if arguments.contains("--report") {
 // delay the user chose themselves (NSInitialToolTipDelay, in ms) still wins.
 UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 750])
 let app = NSApplication.shared
+if let appearance = argument(after: "--appearance") {
+    app.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
+}
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)

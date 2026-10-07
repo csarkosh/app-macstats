@@ -10,6 +10,7 @@ it; this file says how the code is arranged and how to change and release it.
 |---|---|
 | `Sources/MacStats/` | The app, one Swift module. One file per item (`CPU.swift`, `GPU.swift`, `RAM.swift`, `Temp.swift` with `Sensors.swift`, `SMC.swift`, `SensorCatalog.swift` and `Battery.swift`, `Disk.swift`), `MenuKit.swift` (the menu bar item, the panel window, rows, bars, gauges, sparklines, `twoLines`), `HoverTip.swift` (the panels' tooltips), `IOReport.swift` (the private counters the CPU and GPU readers use), `AppIcon.swift` (the icon, drawn in code), `main.swift` (the app delegate and the command line). |
 | `Tests/MacStatsTests/main.swift` | The tests: a program that runs the built `MacStats` through its command-line flags. `make test`. |
+| `docs/previews/` | The README's screenshots: the menu bar group, and each panel in dark and light, taken by `scripts/previews.sh` (real captures of the built app, with `--appearance` and `--show-panel --after --each`, the flags for screenshots). Retake them when a panel's look changes. |
 | `scripts/bundle.sh` | Assembles `build/MacStats.app` from the built binary: Info.plist with the version from `VERSION`, the icon, an ad-hoc signature. |
 | `install.sh` | The `curl \| sh` installer and uninstaller; also what `make install` runs from a checkout. |
 | `Makefile` | `app`, `install`, `uninstall`, `test`, `clean`. |
