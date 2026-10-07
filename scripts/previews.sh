@@ -5,18 +5,28 @@
 # for the charts to fill, captures each panel's window with screencapture, then starts
 # the installed MacStats again. Needs Screen Recording permission for the terminal.
 #
-#   make app && sh scripts/previews.sh           # about eight minutes
+#   make app && sh scripts/previews.sh           # the panels; about eight minutes
+#   sh scripts/previews.sh --hero                # the panels and the hero (menubar.png) too
 #   sh scripts/previews.sh --quick               # no wait: empty charts, for a layout check
 #
-# The Disk panel shows this Mac's folders; the README's own capture used a sample list
-# written to ~/Library/Caches/sh.csarko.MacStats/folders.json first.
+# The hero is left alone unless --hero: the README's is a screenshot taken by hand of the
+# screen's top with the CPU panel open, finished with compose-hero.swift --finish. The Disk
+# panel shows this Mac's folders; the README's own capture used a sample list written to
+# ~/Library/Caches/sh.csarko.MacStats/folders.json first.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/build/MacStats.app/Contents/MacOS/MacStats"
 OUT="$ROOT/docs/previews"
 WAIT=185
-[ "${1:-}" = --quick ] && WAIT=3
+HERO=0
+for option in "$@"; do
+  case "$option" in
+    --quick) WAIT=3 ;;
+    --hero) HERO=1 ;;
+    *) echo "previews.sh: unknown option $option" >&2; exit 2 ;;
+  esac
+done
 [ -x "$APP" ] || { echo "previews.sh: build the app first: make app" >&2; exit 1; }
 mkdir -p "$OUT"
 
@@ -74,7 +84,7 @@ for look in dark light; do
   # The hero: the bar from the notch's edge to the screen's edge (the system's own icons
   # and the clock show it is the menu bar), composed over a gradient with the CPU panel
   # under its item (the dark run; the bar's look is the system's).
-  if [ "$look" = dark ] && span="$("$HELPER" items)"; then
+  if [ "$look" = dark ] && [ "$HERO" = 1 ] && span="$("$HELPER" items)"; then
     set -- $span
     screencapture -x -R "$3,0,$(($2 - $3)),24" "$OUT/bar.png"
     paper="$("$HELPER" wallpaper)" && screencapture -x -o -l "$paper" "$OUT/wallpaper.png" || echo "previews.sh: no wallpaper window; using a gradient" >&2
