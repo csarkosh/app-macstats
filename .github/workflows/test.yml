@@ -1,0 +1,24 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the app
+        run: make app
+      - name: Test
+        # A virtual machine has no sensors, battery or GPU to read; those tests skip.
+        run: make test
+      - name: Installer parses
+        run: sh -n install.sh && sh -n scripts/bundle.sh
+      - name: The bundle carries its version and icon
+        run: |
+          test "$(build/MacStats.app/Contents/MacOS/MacStats --version)" = "$(cat VERSION)"
+          test -f build/MacStats.app/Contents/Resources/AppIcon.icns
+          codesign --verify --deep build/MacStats.app
