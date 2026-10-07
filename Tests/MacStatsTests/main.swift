@@ -131,6 +131,9 @@ func number(_ text: String) -> Double {
 
 let isAppleSilicon = (try? run("/usr/bin/uname", ["-m"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)) == "arm64"
 let cpuBrand = (try? run("/usr/sbin/sysctl", ["-n", "machdep.cpu.brand_string"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
+/// GitHub's macOS runners are virtual machines: no sensors, no CPU clusters in the registry,
+/// and a virtual GPU. Checks that need the real hardware hold only off one.
+let isVirtualMachine = (try? run("/usr/sbin/sysctl", ["-n", "kern.hv_vmm_present"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)) == "1"
 let chipHasSensors: Bool = {
     guard let lines = try? macStats("--sensors").lines else { return false }
     return lines.contains("Temperature")
@@ -246,8 +249,11 @@ test("reads the CPU: System, User and Idle add up, each core type, load, clock s
     let sum = percent("System") + percent("User") + percent("Idle")
     check(abs(sum - 100) <= 2, "System, User and Idle add up to 100% (\(sum))")
     for title in ["1 minute", "5 minutes", "15 minutes"] { check(number(fields(lines, title)?.first ?? "") >= 0, "\(title) load") }
-    if isAppleSilicon {
-        let cores = section(lines, "Cores")
+    let cores = section(lines, "Cores")
+    if isAppleSilicon && cores.isEmpty {
+        check(isVirtualMachine, "an Apple silicon Mac names its core clusters in the registry (a virtual machine does not)")
+    }
+    if isAppleSilicon && !cores.isEmpty {
         let total = cores.reduce(0) { $0 + (Int($1[1]) ?? 0) }
         let ncpu = Int(try run("/usr/sbin/sysctl", ["-n", "hw.ncpu"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
         checkEqual(total, ncpu, "the core types hold every core")
@@ -273,7 +279,10 @@ test("reads the GPU: utilization, renderer, tiler, memory, model and the apps us
         check(percent >= 0 && percent <= 100, "\(title) is a percentage")
     }
     let memory = (fields(lines, "Memory") ?? []).map { Double($0) ?? -1 }
-    check(memory.count == 3 && memory[0] >= 0 && memory[0] <= memory[1], "GPU memory in use is within what is set aside")
+    check(memory.count == 3 && memory[0] >= 0 && memory[1] >= 0, "GPU memory figures are read (\(memory))")
+    if !isVirtualMachine {
+        check(memory.count == 3 && memory[0] <= memory[1], "GPU memory in use is within what is set aside (\(memory))")
+    }
     let ram = Double(try run("/usr/sbin/sysctl", ["-n", "hw.memsize"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     check(memory.count == 3 && memory[2] > 0 && memory[2] <= ram, "the GPU memory limit is at most the Mac's memory")
     check(!(fields(lines, "Model")?.first ?? "").isEmpty, "names the GPU")
@@ -300,7 +309,9 @@ test("rates power use by this Mac's tiers") {
     if isAppleSilicon && matches(cpuBrand, "Apple M[0-9]+$") {
         checkEqual(try [9.9, 10, 19.9, 20, 31].map(level), ["normal", "moderate", "moderate", "high", "high"], "the plain M-chip tiers")
     }
-    let gauges = try macStats("--sensors").lines
+    let sensors = try macStats("--sensors", ok: false)
+    if sensors.status != 0 { try skip("this Mac reports no sensors") }
+    let gauges = sensors.lines
     if let hottest = fields(gauges, "Hottest"), let top = section(gauges, "Temperature").first {
         checkEqual(hottest[0], top[0], "the gauge shows the top Temperature row")
     }
@@ -347,7 +358,9 @@ test("lists each part of the Mac once, with no numbered sensors left") {
 }
 
 test("puts voltage, current and power in one plain Power section") {
-    let lines = try macStats("--sensors").lines
+    let sensors = try macStats("--sensors", ok: false)
+    if sensors.status != 0 { try skip("this Mac reports no sensors") }
+    let lines = sensors.lines
     for raw in ["Voltage", "Current"] { check(!lines.contains(raw), "no separate \(raw) section") }
     let titles = section(lines, "Power").map { $0[0] }
     if titles.isEmpty { try skip("this Mac reports no power sensors") }
