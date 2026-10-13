@@ -15,7 +15,7 @@ it; this file says how the code is arranged and how to change and release it.
 | `install.sh` | The `curl \| sh` installer and uninstaller; also what `make install` runs from a checkout. |
 | `Makefile` | `app`, `install`, `uninstall`, `test`, `clean`. |
 | `VERSION` | The version, `x.y.z`; stamped into the bundle and printed by `MacStats --version`. |
-| `.github/workflows/test.yml` | Builds and tests on a macOS runner on every push and pull request. |
+| `.github/workflows/test.yml` | Builds and tests on a macOS runner, **only when started by hand** (`gh workflow run test.yml --ref <branch>`; no push or pull request starts it, Cyrus 2026-10-13: runner minutes cost time and money). Run `make test` locally first; start the workflow when a clean-machine run is wanted or Cyrus asks. |
 | `LICENSE`, `LICENSE-stats.txt` | MIT, and the MIT licence of Stats, from which two files are adapted. |
 
 The Homebrew formula lives in [`csarkosh/homebrew-tap`](https://github.com/csarkosh/homebrew-tap)
