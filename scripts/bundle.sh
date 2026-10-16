@@ -1,9 +1,15 @@
 #!/bin/sh
 # Assembles build/MacStats.app from a built MacStats binary: the bundle's Info.plist
-# (with the version from VERSION), the app icon the binary draws itself, and an ad-hoc
-# signature. `make app` builds the binary and runs this.
+# (with the version from VERSION), the app icon the binary draws itself, and a signature.
+# `make app` builds the binary and runs this.
 #
 #   sh scripts/bundle.sh [path/to/MacStats binary]   # default .build/release/MacStats
+#
+# Signing: ad-hoc, unless CODESIGN_IDENTITY names a Developer ID Application identity in the
+# keychain ("Developer ID Application: Name (TEAMID)"); then the bundle is signed with it, with
+# the hardened runtime and a timestamp, which is what notarization (notarize.sh) needs, and the
+# zip of it opens on any Mac without building or the quarantine step. A build on this Mac runs
+# either way.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,6 +47,11 @@ ICONSET="$(mktemp -d)/AppIcon.iconset"
 iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$ICONSET"
 rm -rf "$(dirname "$ICONSET")"
 
-# Ad-hoc signed: built on this Mac, so macOS runs it without a Developer ID.
-codesign --force --sign - "$APP"
+if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+  codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP"
+  codesign --verify --deep --strict "$APP"
+else
+  # Ad-hoc signed: built on this Mac, so macOS runs it without a Developer ID.
+  codesign --force --sign - "$APP"
+fi
 echo "Built $APP ($VERSION)"

@@ -11,7 +11,7 @@ it; this file says how the code is arranged and how to change and release it.
 | `Sources/MacStats/` | The app, one Swift module. One file per item (`CPU.swift`, `GPU.swift`, `RAM.swift`, `Temp.swift` with `Sensors.swift`, `SMC.swift`, `SensorCatalog.swift` and `Battery.swift`, `Disk.swift`), `MenuKit.swift` (the menu bar item, the panel window, rows, bars, gauges, sparklines, `twoLines`), `HoverTip.swift` (the panels' tooltips), `IOReport.swift` (the private counters the CPU and GPU readers use), `AppIcon.swift` (the icon, drawn in code), `main.swift` (the app delegate and the command line). |
 | `Tests/MacStatsTests/main.swift` | The tests: a program that runs the built `MacStats` through its command-line flags. `make test`. |
 | `docs/previews/` | The README's screenshots, taken by `scripts/previews.sh`: each panel in dark and light (real captures of the built app, with `--appearance` and `--show-panel --after --each`, the flags for screenshots), and `menubar.png`, the hero: a screenshot of the screen's top with the CPU panel open over the wallpaper, taken by hand, cut to 292 pt and faded at the bottom by `scripts/compose-hero.swift --finish` (a bare strip of the bar never reads as a menu bar; the screen's top edge, the system icons and a dropdown do). `previews.sh --hero` can compose one instead from captures of the bar, the wallpaper window and the CPU panel. Retake them when a panel's look changes. |
-| `scripts/bundle.sh` | Assembles `build/MacStats.app` from the built binary: Info.plist with the version from `VERSION`, the icon, an ad-hoc signature. |
+| `scripts/bundle.sh` | Assembles `build/MacStats.app` from the built binary: Info.plist with the version from `VERSION`, the icon, and a signature: ad-hoc, or the Developer ID's (hardened runtime, timestamp) when `CODESIGN_IDENTITY` names it. `scripts/notarize.sh` sends a zip of that to Apple, staples the ticket and rewrites the zip; `.github/workflows/release.yml` runs both (see Releasing). |
 | `install.sh` | The `curl \| sh` installer and uninstaller; also what `make install` runs from a checkout. |
 | `Makefile` | `app`, `install`, `uninstall`, `test`, `clean`. |
 | `VERSION` | The version, `x.y.z`; stamped into the bundle and printed by `MacStats --version`. |
@@ -55,8 +55,18 @@ with every file in `Sources/MacStats/` except `main.swift`.
 
 ## Releasing
 
-1. Bump `VERSION`, commit, tag `v<version>`, push both; create a GitHub release for the tag.
+1. `gh workflow run release -f version=<version>` (the `release` workflow, started by hand
+   only): it bumps `VERSION`, commits, tags `v<version>`, builds `MacStats.app` on a macOS
+   runner, signs it with the Developer ID (`scripts/bundle.sh` with `CODESIGN_IDENTITY`,
+   hardened runtime and a timestamp), notarizes and staples it (`scripts/notarize.sh`), pushes
+   the commit and tag together, and publishes the GitHub release with
+   `MacStats-<version>-arm64.zip` and its sha256. Secrets: `APPLE_CERT_P12`,
+   `APPLE_CERT_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` (the same
+   identity and App Store Connect key as `ide-arkos`; the files live in
+   `~/.config/arkos-release/`, outside every repository). The zip opens on any Mac as
+   downloaded, no build and no quarantine step.
 2. In `csarkosh/homebrew-tap`, point `Formula/macstats.rb` at the new tag's tarball
    (`https://github.com/csarkosh/app-macstats/archive/refs/tags/v<version>.tar.gz`) with its
-   `sha256` (`curl -fsSL <url> | shasum -a 256`), and push.
+   `sha256` (`curl -fsSL <url> | shasum -a 256`), and push. (The formula still builds from
+   source; a cask over the notarized zip would spare the Command Line Tools.)
 3. `install.sh` installs the latest release by itself; nothing to update there.
