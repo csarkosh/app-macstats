@@ -187,9 +187,14 @@ func tooltipsReport() -> Int32 {
     let mail = Entry(title: "Mail", path: home + "/Library/Mail")
     mail.note = "private"
     disk.show([measured, downloads, desktop, mail], at: Date())
-    // And a made-up external disk's section, so its tooltips are listed without one attached.
-    disk.showSampleVolume(ExternalVolume(name: "Sample Disk", mountPoint: "/Volumes/Sample Disk", uuid: "sample",
-                                         total: 1_800_000_000_000, used: 85_200_000_000, isNetwork: false))
+    // And made-up external disks' sections, so their tooltips are listed without one attached:
+    // one not granted yet and one macOS refused.
+    disk.showSampleVolumes([
+        ExternalVolume(name: "Sample Disk", mountPoint: "/Volumes/Sample Disk", uuid: "sample",
+                       total: 1_800_000_000_000, used: 85_200_000_000, isNetwork: false),
+        ExternalVolume(name: "Refused Disk", mountPoint: "/Volumes/Refused Disk", uuid: "sample-refused",
+                       total: 500_000_000_000, used: 120_000_000_000, isNetwork: false),
+    ], refused: ["sample-refused"])
     let panels: [(String, StatsPanel)] = [
         ("CPU", CPUPanel(history: CPUHistory(), reader: reader)), ("GPU", gpu),
         ("RAM", RAMPanel(history: MemoryHistory())), ("Temp", temp), ("Disk", disk),
@@ -277,10 +282,12 @@ if arguments.contains("--spaces") {
     exit(spaces.isEmpty ? 1 : 0)
 }
 if arguments.contains("--volumes") {
-    let granted = GrantStore().load()  // only reads defaults; no volume is opened
+    // Reads defaults and the app's own cache files only; no volume is opened.
+    let granted = GrantStore().load()
     for volume in externalVolumes() {
         let open = volume.isNetwork ? granted.networkVolumes : granted.removableVolumes
-        print([volume.name, String(volume.used), String(volume.total), volume.mountPoint, open ? "granted" : "private"].joined(separator: "\t"))
+        let state = loadSavedVolume(volume.uuid)?.refused == true ? "no access" : open ? "granted" : "private"
+        print([volume.name, String(volume.used), String(volume.total), volume.mountPoint, state].joined(separator: "\t"))
     }
     exit(0)
 }

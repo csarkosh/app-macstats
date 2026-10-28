@@ -357,8 +357,8 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     })
     private let spaceList = NSStackView()
     /// A section per external disk, keyed by the volume's UUID, under the folder list.
-    private var volumeSections: [String: VolumeSection] = [:]
-    private let volumesStack = NSStackView()
+    var volumeSections: [String: VolumeSection] = [:]
+    let volumesStack = NSStackView()
     private var folders: [Entry] = []
     private(set) var scanning = false
     private var measuredAt: Date?
@@ -368,9 +368,13 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     /// The folders the person has granted, remembered for this build of the app.
     let grants = GrantStore()
     /// What `grants` held when last read: in `init`, before each measurement and on each click.
-    private var granted = GrantSet()
+    var granted = GrantSet()
     /// The folders being measured after a Grant click, as canonical paths; their rows spin.
     private var granting: Set<String> = []
+    /// Every measurement that walks a disk (the startup disk's folders, each external disk's)
+    /// runs here, one after another, so two never compete for the disk. A Grant click on a
+    /// home folder measures on its own queue instead, since the person is waiting for it.
+    let measureQueue = DispatchQueue(label: "sh.csarko.MacStats.measure", qos: .utility)
 
     init() {
         super.init(title: "Disk")
@@ -408,35 +412,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         for row in Array(spaceRows.values) + [usedRow] { row.value.stringValue = "…" }
         body.addArrangedSubview(separatorView("My apps / files"))
 
-        // The name column takes whatever the fixed size column leaves.
-        let name = NSTableColumn(identifier: .init("name"))
-        name.width = Panel.width - 90
-        name.resizingMask = .autoresizingMask
-        let size = NSTableColumn(identifier: .init("size"))
-        size.width = 72
-        size.resizingMask = []
-        outline.addTableColumn(name)
-        outline.addTableColumn(size)
-        outline.outlineTableColumn = name
-        outline.style = .plain
-        outline.headerView = nil
-        outline.backgroundColor = .clear
-        outline.rowSizeStyle = .custom
-        outline.rowHeight = Panel.row
-        outline.indentationPerLevel = 10
-        outline.intercellSpacing = NSSize(width: 4, height: 0)
-        outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
-        outline.selectionHighlightStyle = .none
-        outline.dataSource = self
-        outline.delegate = self
-        outline.target = self
-        outline.doubleAction = #selector(revealInFinder)
-        let scroll = NSScrollView()
-        scroll.documentView = outline
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = folderList(outline, source: self, target: self, doubleAction: #selector(revealInFinder(_:)))
         // The row under the mouse, for the Grant button. HoverTracker's area on the content
         // view goes on following it for the tooltips.
         let hover = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
@@ -453,14 +429,13 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         // fills its top instead.
         spinner.style = .spinning
         spinner.controlSize = .small
+        let measuredLine = statusLine(status, remeasuring)
+        measuring.font = .systemFont(ofSize: 10)
+        measuring.textColor = .tertiaryLabelColor
         for text in [measuring, status, remeasuring] {
-            text.font = .systemFont(ofSize: 10)
-            text.textColor = .tertiaryLabelColor
             text.hoverTip = twoLines("Private folders stay closed unless you grant one; ≥ means at least.")
         }
         measuring.preferredMaxLayoutWidth = Panel.width - 24
-        remeasuring.font = NSFontManager.shared.convert(.systemFont(ofSize: 10), toHaveTrait: .italicFontMask)
-        remeasuring.alignment = .right
         measuringNote.setViews([spinner, measuring], in: .leading)
         measuringNote.alignment = .top
         measuringNote.translatesAutoresizingMaskIntoConstraints = false
@@ -468,14 +443,8 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         folderArea.translatesAutoresizingMaskIntoConstraints = false
         folderArea.addSubview(scroll)
         folderArea.addSubview(measuringNote)
-        let statusLine = NSView()
-        statusLine.translatesAutoresizingMaskIntoConstraints = false
-        for text in [status, remeasuring] {
-            text.translatesAutoresizingMaskIntoConstraints = false
-            statusLine.addSubview(text)
-        }
-        body.addArrangedSubview(statusLine)
-        body.setCustomSpacing(6, after: statusLine)
+        body.addArrangedSubview(measuredLine)
+        body.setCustomSpacing(6, after: measuredLine)
         body.addArrangedSubview(folderArea)
         volumesStack.orientation = .vertical
         volumesStack.alignment = .leading
@@ -492,22 +461,16 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
             measuringNote.leadingAnchor.constraint(equalTo: folderArea.leadingAnchor),
             measuringNote.trailingAnchor.constraint(equalTo: folderArea.trailingAnchor),
             measuringNote.topAnchor.constraint(equalTo: folderArea.topAnchor),
-            // Room for its line, kept while measuring, so the panel does not jump.
-            statusLine.widthAnchor.constraint(equalToConstant: Panel.width),
-            statusLine.heightAnchor.constraint(equalToConstant: 14),
-            status.leadingAnchor.constraint(equalTo: statusLine.leadingAnchor),
-            status.centerYAnchor.constraint(equalTo: statusLine.centerYAnchor),
-            remeasuring.trailingAnchor.constraint(equalTo: statusLine.trailingAnchor),
-            remeasuring.centerYAnchor.constraint(equalTo: statusLine.centerYAnchor),
-            remeasuring.leadingAnchor.constraint(greaterThanOrEqualTo: status.trailingAnchor, constant: 8),
         ])
         updateStatus()
     }
 
+    /// The startup disk's measurement is queued first; the external disks', read once their
+    /// list arrives, queue behind it.
     override func willOpen() {
         refreshSpaces()
-        refreshVolumes()
         if measuredAt.map({ Date().timeIntervalSince($0) > 600 }) ?? true { measureFolders() }
+        refreshVolumes(remeasuringOlderThan: 600)
     }
 
     func refreshSpaces() {
@@ -523,38 +486,10 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         }
     }
 
-    /// Reads the external disks off the main thread (a stalled network share can hang the
-    /// read) and shows a section per disk mounted now, in mount order.
-    func refreshVolumes() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let volumes = externalVolumes()
-            DispatchQueue.main.async { self.showVolumes(volumes) }
-        }
-    }
-
-    private func showVolumes(_ volumes: [ExternalVolume]) {
-        var sections: [String: VolumeSection] = [:]
-        var inOrder: [VolumeSection] = []
-        for volume in volumes where sections[volume.uuid] == nil {
-            let section = volumeSections[volume.uuid] ?? VolumeSection(volume: volume)
-            section.update(volume: volume)
-            sections[volume.uuid] = section
-            inOrder.append(section)
-        }
-        volumeSections = sections  // a disk no longer mounted loses its section
-        volumesStack.setViews(inOrder, in: .top)
-        fitToContents()
-    }
-
-    /// Shows a made-up disk's section, so `--tooltips` lists its tooltips on any Mac.
-    func showSampleVolume(_ volume: ExternalVolume) {
-        showVolumes([volume])
-    }
-
     /// Measures the folders again. The last measurement stays on screen until the new
     /// one replaces it; only with none to show does the list wait, empty, for the first.
     /// The private folders it opens are the granted ones, read again now: a rebuilt app's
-    /// grants start empty, so it opens none until one is clicked.
+    /// grants start empty, so it opens none until one is clicked. It runs on `measureQueue`.
     func measureFolders() {
         guard !scanning else { return }
         scanning = true
@@ -562,7 +497,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         let granted = granted
         spinner.startAnimation(nil)
         updateStatus()
-        DispatchQueue.global(qos: .utility).async {
+        measureQueue.async {
             let measured = scanFolders(dataVolume, granted: granted)
             DispatchQueue.main.async {
                 self.scanning = false
@@ -632,12 +567,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         // The measuring note fills the list only while there is nothing to show yet.
         measuringNote.isHidden = !(scanning && folders.isEmpty)
         measuring.stringValue = "Measuring folders, about a minute… " + privacy
-        if let measuredAt {
-            let time = DateFormatter.localizedString(from: measuredAt, dateStyle: .none, timeStyle: .short)
-            status.stringValue = "Last measured at \(time)."
-        } else {
-            status.stringValue = ""
-        }
+        status.stringValue = lastMeasuredText(measuredAt)
         // Before the first measurement the measuring note says so instead.
         remeasuring.isHidden = !(scanning && measuredAt != nil)
         fitToContents()
@@ -646,6 +576,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     @objc private func refreshAll() {
         refreshSpaces()
         measureFolders()
+        refreshVolumes(remeasuringOlderThan: 0)
     }
 
     @objc private func openStorageSettings() {
@@ -655,18 +586,25 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         }
     }
 
-    @objc private func revealInFinder() {
-        guard let entry = outline.item(atRow: outline.clickedRow) as? Entry, let path = entry.path else { return }
+    /// A double-click in any folder list, the startup disk's or an external disk's.
+    @objc func revealInFinder(_ list: NSOutlineView) {
+        guard let entry = list.item(atRow: list.clickedRow) as? Entry, let path = entry.path else { return }
         orderOut(nil)
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
+    // The panel serves every folder list: the startup disk's and each external disk's. They
+    // differ only in their top level; rows, cells and double-clicks are the same.
+    private func topLevel(of list: NSOutlineView) -> [Entry] {
+        list === outline ? folders : volumeSections.values.first { $0.outline === list }?.folders ?? []
+    }
+
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        (item as? Entry)?.children.count ?? folders.count
+        (item as? Entry)?.children.count ?? topLevel(of: outlineView).count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        (item as? Entry)?.children[index] ?? folders[index]
+        (item as? Entry)?.children[index] ?? topLevel(of: outlineView)[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
@@ -822,21 +760,26 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         hover(outline.visibleRect.contains(local) ? outline.row(at: local) : -1)
     }
 
-    /// Fades the old row's button out and the new row's in, if it can carry one.
-    private func hover(_ row: Int) {
+    /// Fades the old row's button out and the new row's in, if it can carry one. One button
+    /// shows at a time in the whole panel, so an external disk's goes.
+    func hover(_ row: Int) {
         guard row != hoveredRow else { return }
         if let cell = sizeCell(at: hoveredRow) { cell.setGrantVisible(false, animated: true) }
         hoveredRow = row
-        if let cell = sizeCell(at: row), cell.showsGrant { cell.setGrantVisible(true, animated: true) }
+        if let cell = sizeCell(at: row), cell.showsGrant {
+            hideVolumeGrants(animated: true)
+            cell.setGrantVisible(true, animated: true)
+        }
     }
 
-    /// Hides any button at once and forgets the hovered row: before the rows are reloaded,
-    /// and when the panel closes.
+    /// Hides any button at once, an external disk's too, and forgets the hovered row: before
+    /// the rows are reloaded, and when the panel closes.
     private func endHover() {
         outline.enumerateAvailableRowViews { rowView, _ in
             for case let cell as SizeCell in rowView.subviews { cell.setGrantVisible(false, animated: false) }
         }
         hoveredRow = -1
+        hideVolumeGrants(animated: false)
     }
 
     /// The list scrolled under a still mouse: the button goes to the row now under it.

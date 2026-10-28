@@ -1,7 +1,9 @@
 // The Disk panel's folder rows: the size column's cell, which shows a folder's size or note
 // and, on the row the mouse is over, a Grant button over the note, which gives way to a
 // spinner while the granted folder is measured. The panel decides which
-// row is hovered and which rows can carry a button; nothing here opens a folder.
+// row is hovered and which rows can carry a button; nothing here opens a folder. Also the
+// look shared by every folder list, the startup disk's and each external disk's, and the
+// line above it with the time of the last measurement.
 
 import Cocoa
 
@@ -106,4 +108,75 @@ final class SizeCell: NSTableCellView {
             self.button.isHidden = true
         })
     }
+}
+
+/// Sets up `outline` as a folder list like the startup disk's: a name column taking what the
+/// fixed 72-pt size column leaves, 22-pt rows indented 10 pt a level, no header and no
+/// selection, double-click sent to `target`. Returns the scroll view that holds it.
+func folderList(
+    _ outline: NSOutlineView, source: NSOutlineViewDataSource & NSOutlineViewDelegate, target: AnyObject, doubleAction: Selector
+) -> NSScrollView {
+    let name = NSTableColumn(identifier: .init("name"))
+    name.width = Panel.width - 90
+    name.resizingMask = .autoresizingMask
+    let size = NSTableColumn(identifier: .init("size"))
+    size.width = 72
+    size.resizingMask = []
+    outline.addTableColumn(name)
+    outline.addTableColumn(size)
+    outline.outlineTableColumn = name
+    outline.style = .plain
+    outline.headerView = nil
+    outline.backgroundColor = .clear
+    outline.rowSizeStyle = .custom
+    outline.rowHeight = Panel.row
+    outline.indentationPerLevel = 10
+    outline.intercellSpacing = NSSize(width: 4, height: 0)
+    outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+    outline.selectionHighlightStyle = .none
+    outline.dataSource = source
+    outline.delegate = source
+    outline.target = target
+    outline.doubleAction = doubleAction
+    let scroll = NSScrollView()
+    scroll.documentView = outline
+    scroll.drawsBackground = false
+    scroll.hasVerticalScroller = true
+    scroll.autohidesScrollers = true
+    scroll.translatesAutoresizingMaskIntoConstraints = false
+    return scroll
+}
+
+/// The 14-pt line above a folder list: `status` ("Last measured at 9:41 PM.") at its left and
+/// `remeasuring` ("Remeasuring…", in italics) at its right, both in small faint type.
+func statusLine(_ status: NSTextField, _ remeasuring: NSTextField) -> NSView {
+    for text in [status, remeasuring] {
+        text.font = .systemFont(ofSize: 10)
+        text.textColor = .tertiaryLabelColor
+    }
+    remeasuring.font = NSFontManager.shared.convert(.systemFont(ofSize: 10), toHaveTrait: .italicFontMask)
+    remeasuring.alignment = .right
+    let line = NSView()
+    line.translatesAutoresizingMaskIntoConstraints = false
+    for text in [status, remeasuring] {
+        text.translatesAutoresizingMaskIntoConstraints = false
+        line.addSubview(text)
+    }
+    NSLayoutConstraint.activate([
+        // Room for its line, kept while measuring, so the panel does not jump.
+        line.widthAnchor.constraint(equalToConstant: Panel.width),
+        line.heightAnchor.constraint(equalToConstant: 14),
+        status.leadingAnchor.constraint(equalTo: line.leadingAnchor),
+        status.centerYAnchor.constraint(equalTo: line.centerYAnchor),
+        remeasuring.trailingAnchor.constraint(equalTo: line.trailingAnchor),
+        remeasuring.centerYAnchor.constraint(equalTo: line.centerYAnchor),
+        remeasuring.leadingAnchor.constraint(greaterThanOrEqualTo: status.trailingAnchor, constant: 8),
+    ])
+    return line
+}
+
+/// "Last measured at 9:41 PM.", or nothing before the first measurement.
+func lastMeasuredText(_ measuredAt: Date?) -> String {
+    guard let measuredAt else { return "" }
+    return "Last measured at \(DateFormatter.localizedString(from: measuredAt, dateStyle: .none, timeStyle: .short))."
 }
