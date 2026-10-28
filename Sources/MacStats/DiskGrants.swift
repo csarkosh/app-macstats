@@ -56,15 +56,17 @@ func grantKind(for path: String, users: String = "/Users") -> GrantKind {
 
 // MARK: - Measuring one granted folder
 
-enum GrantOutcome { case measured, refused }
+enum GrantOutcome { case measured, refused, unchanged }
 
 /// Measures `path` on its own, to the depth left under it, and splices the result into
 /// `folders` in place: the entry loses its note and gains bytes and children, every ancestor
 /// grows by the same bytes, and each ancestor's `partial` is recomputed from what is still
-/// unmeasured below it. A root that cannot be opened leaves the entry as `no access`,
-/// `refused`, and returns `.refused`; so does a path that is not in the tree, which changes
-/// nothing. The top level of `folders` keeps its order: a caller that wants it sorted again
-/// sorts with `isLarger`.
+/// unmeasured below it (a listed note, or a small folder the scan dropped with something
+/// unmeasured inside). A root macOS refuses to open (EACCES or EPERM) leaves the entry as
+/// `no access`, `refused`, and returns `.refused`. A path that is not in the tree, or that
+/// cannot be opened for another reason (it is gone, say), changes nothing and returns
+/// `.unchanged`. The top level of `folders` keeps its order: a caller that wants it sorted
+/// again sorts with `isLarger`.
 @discardableResult
 func grant(
     _ path: String, in folders: [Entry], depth: Int = folderDepth, minimumBytes: Int64 = defaultMinimumBytes,
@@ -79,32 +81,34 @@ func grant(
         }
         return nil
     }
-    guard let found = chain(folders), let entry = found.last else { return .refused }
+    guard let found = chain(folders), let entry = found.last else { return .unchanged }
 
     // macOS answers a refused folder with "not permitted" when it is opened.
-    guard let handle = opendir(path) else {
-        if errno == EACCES || errno == EPERM {
-            entry.note = "no access"
-            entry.refused = true
-        }
+    // The tree's own spelling is the one the scan walks, so its children match `keep()`'s rules.
+    let walked = entry.path ?? path
+    guard let handle = opendir(walked) else {
+        guard errno == EACCES || errno == EPERM else { return .unchanged }
+        entry.note = "no access"
+        entry.refused = true
         return .refused
     }
     closedir(handle)
 
     let users = folders.first { $0.title == "Users" }?.path
-    let scan = scanTree(path, depth: depth - found.count, minimumBytes: minimumBytes, granted: granted, users: users)
+    let scan = scanTree(walked, depth: depth - found.count, minimumBytes: minimumBytes, granted: granted, users: users)
     let added = scan.bytes - entry.bytes
     entry.note = nil
     entry.refused = false
     entry.bytes = scan.bytes
     entry.partial = scan.partial
+    entry.droppedUnmeasured = scan.droppedUnmeasured
     entry.children = scan.folders
 
     // From the entry's parent up: grow, re-sort the children, and recompute the minimum mark.
     for ancestor in found.dropLast().reversed() {
         ancestor.bytes += added
         ancestor.children.sort(by: isLarger)
-        ancestor.partial = hasUnmeasured(ancestor) || ancestor.children.contains { $0.partial }
+        ancestor.partial = hasUnmeasured(ancestor) || ancestor.droppedUnmeasured || ancestor.children.contains { $0.partial }
     }
     return .measured
 }

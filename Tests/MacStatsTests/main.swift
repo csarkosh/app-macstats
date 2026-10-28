@@ -487,6 +487,14 @@ test("clears ≥ only when nothing unmeasured is left") {
     checkEqual(lines, ["Users | 5 MB", "  alice | 5 MB", "    Documents | 4 MB", "    Code | 1 MB"], "no ≥ remains")
 }
 
+test("keeps ≥ when a dropped small folder hid a private one") {
+    let dir = try tempDir("splice-dropped")
+    try writeTree(dir, [("Users/alice/Documents/a.bin", 4), ("Users/alice/Code/c.bin", 1), ("Users/alice/Library/Mail/m.bin", 0.1)])
+    let lines = try macStats("--report", dir.path, "--min-mb", "1", "--then-grant", dir.path + "/Users/alice/Documents").lines
+        .map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(lines, ["Users | ≥ 5 MB", "  alice | ≥ 5 MB", "    Documents | 4 MB", "    Code | 1 MB"], "Library stays dropped, ≥ stays")
+}
+
 test("shows a refused folder as no access") {
     let dir = try tempDir("refused")
     try writeTree(dir, [("Users/alice/Documents/a.bin", 4), ("Users/alice/Code/c.bin", 1)])

@@ -56,6 +56,9 @@ final class Entry: Codable {
     /// True when "no access" is macOS refusing a folder the person granted, as opposed to
     /// a folder the scan could not read on its own.
     var refused = false
+    /// True when the scan dropped a folder inside this one (too small to list) that held
+    /// something unmeasured, so this folder's size stays a minimum whatever is granted.
+    var droppedUnmeasured = false
     var children: [Entry] = []
 
     init(title: String, path: String? = nil, bytes: Int64 = 0) {
@@ -65,7 +68,7 @@ final class Entry: Codable {
     }
 
     // A measurement saved by an earlier release lacks the newer keys, so each one has a default.
-    enum CodingKeys: String, CodingKey { case title, path, bytes, note, partial, refused, children }
+    enum CodingKeys: String, CodingKey { case title, path, bytes, note, partial, refused, droppedUnmeasured, children }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -75,6 +78,7 @@ final class Entry: Codable {
         note = try values.decodeIfPresent(String.self, forKey: .note)
         partial = try values.decodeIfPresent(Bool.self, forKey: .partial) ?? false
         refused = try values.decodeIfPresent(Bool.self, forKey: .refused) ?? false
+        droppedUnmeasured = try values.decodeIfPresent(Bool.self, forKey: .droppedUnmeasured) ?? false
         children = try values.decodeIfPresent([Entry].self, forKey: .children) ?? []
     }
 
@@ -221,7 +225,7 @@ func scanFolders(
 /// scan is of one folder inside a tree measured from higher up.
 func scanTree(
     _ root: String, depth: Int, minimumBytes: Int64, granted: GrantSet, users usersFolder: String? = nil
-) -> (folders: [Entry], bytes: Int64, partial: Bool) {
+) -> (folders: [Entry], bytes: Int64, partial: Bool, droppedUnmeasured: Bool) {
     let rootPath = root.count > 1 && root.hasSuffix("/") ? String(root.dropLast()) : root
     let base = rootPath == "/" ? "" : rootPath
     let volumes = base + "/Volumes"  // removable and network disks
@@ -240,7 +244,7 @@ func scanTree(
 
     var argv: [UnsafeMutablePointer<CChar>?] = [strdup(rootPath), nil]
     defer { free(argv[0]) }
-    guard let fts = fts_open(&argv, FTS_PHYSICAL | FTS_XDEV | FTS_NOCHDIR, nil) else { return ([], 0, false) }
+    guard let fts = fts_open(&argv, FTS_PHYSICAL | FTS_XDEV | FTS_NOCHDIR, nil) else { return ([], 0, false, false) }
     defer { fts_close(fts) }
 
     func add(_ bytes: Int64, through level: Int) {
@@ -293,15 +297,24 @@ func scanTree(
 
     // Keep what is big enough, every private folder, and unreadable folders in a
     // home (the Trash, say); a folder unreadable elsewhere belongs to the system.
-    func keep(_ list: [Entry]) -> [Entry] {
+    // A folder dropped while something unmeasured is inside it is remembered on its parent
+    // (`parent` is nil at the top), so a later splice can keep the parent's ≥.
+    var droppedAtTop = false
+    func keep(_ list: [Entry], in parent: Entry?) -> [Entry] {
         list.filter { entry in
-            entry.bytes >= minimumBytes || entry.note == "private"
+            let kept = entry.bytes >= minimumBytes || entry.note == "private"
                 || (entry.note != nil && (entry.path ?? "").hasPrefix(users + "/"))
+            // `partial` covers a private folder below the listed depth, which has no row.
+            if !kept && (hasUnmeasured(entry) || entry.partial) {
+                if let parent { parent.droppedUnmeasured = true } else { droppedAtTop = true }
+            }
+            return kept
         }
         .sorted(by: isLarger)
-        .map { entry in entry.children = keep(entry.children); return entry }
+        .map { entry in entry.children = keep(entry.children, in: entry); return entry }
     }
-    return (keep(top), rootBytes, rootPartial)
+    let folders = keep(top, in: nil)
+    return (folders, rootBytes, rootPartial, droppedAtTop)
 }
 
 /// The order of rows in a list: bytes descending, then title.
@@ -624,11 +637,12 @@ func printTree(_ entries: [Entry], indent: Int) {
 func diskReport(folder: String?, minimumBytes: Int64, granted: GrantSet = GrantSet(), thenGrant: String? = nil) -> Int32 {
     /// Scans, then measures `thenGrant` on its own and splices it in, as the Grant button does.
     func scanned(_ root: String) -> [Entry] {
-        let tree = scanFolders(root, minimumBytes: minimumBytes, granted: granted)
+        var tree = scanFolders(root, minimumBytes: minimumBytes, granted: granted)
         if let thenGrant {
             var opened = granted
             opened.folders.insert(canonicalPath(thenGrant))
             grant(thenGrant, in: tree, minimumBytes: minimumBytes, granted: opened)
+            tree.sort(by: isLarger)  // the ancestors grew, which grant leaves to its caller
         }
         return tree
     }
