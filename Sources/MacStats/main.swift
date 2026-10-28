@@ -27,7 +27,7 @@
 //   MacStats --volumes                      # prints each external disk: name, used, total, mount point, state
 //   MacStats --grants [--defaults-suite <name>] [--as-build <id>] [--add-folder <path>] [--set-removable true|false]  # prints the build and the remembered grants, after any writes
 //   MacStats --legend                   # prints the Disk panel's Spaces rows, in order
-//   MacStats --report [folder] [--min-mb N] [--granted <path>]… [--then-grant <path>]  # prints the Disk panel's folders, opening the granted ones; --then-grant measures that folder alone afterwards and splices it in
+//   MacStats --report [folder] [--min-mb N] [--granted <path>]… [--then-grant <path>]  # prints the Disk panel's folders, opening the granted ones; --then-grant measures that folder alone afterwards and splices it in; with no folder, ends with each external disk's used space
 //   MacStats --read-measurement <file|-> [--granted <path>]…  # prints the folders of a saved measurement as the panel shows it (- reads standard input)
 //   MacStats --grantable <path>             # prints dialog, none or "not private": whether a private row gets Grant
 
@@ -187,6 +187,9 @@ func tooltipsReport() -> Int32 {
     let mail = Entry(title: "Mail", path: home + "/Library/Mail")
     mail.note = "private"
     disk.show([measured, downloads, desktop, mail], at: Date())
+    // And a made-up external disk's section, so its tooltips are listed without one attached.
+    disk.showSampleVolume(ExternalVolume(name: "Sample Disk", mountPoint: "/Volumes/Sample Disk", uuid: "sample",
+                                         total: 1_800_000_000_000, used: 85_200_000_000, isNetwork: false))
     let panels: [(String, StatsPanel)] = [
         ("CPU", CPUPanel(history: CPUHistory(), reader: reader)), ("GPU", gpu),
         ("RAM", RAMPanel(history: MemoryHistory())), ("Temp", temp), ("Disk", disk),

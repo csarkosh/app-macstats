@@ -409,6 +409,16 @@ test("lists external volumes with their used and total bytes") {
     // With no external disk the flag prints nothing; that is a pass too.
 }
 
+test("--report ends with a line per external volume") {
+    let volumes = try macStats("--volumes").lines.filter { !$0.isEmpty }
+    if volumes.isEmpty { try skip("no external disk attached") }
+    let report = try macStats("--report", timeout: 600).lines
+    for volume in volumes {
+        let name = volume.components(separatedBy: "\t")[0]
+        check(report.contains { $0.hasPrefix(name + "\t") && $0.contains(" of ") }, "a line for \(name)")
+    }
+}
+
 test("knows which build it is") {
     let build = fields(try macStats("--grants").lines, "build")?.first ?? ""
     check(matches(build, "^[0-9a-f]{40,}$") || build == "unsigned", "a cdhash or unsigned, got \(build)")

@@ -356,6 +356,9 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         ($0.title, PanelRow($0.title + ":", color: $0.color))
     })
     private let spaceList = NSStackView()
+    /// A section per external disk, keyed by the volume's UUID, under the folder list.
+    private var volumeSections: [String: VolumeSection] = [:]
+    private let volumesStack = NSStackView()
     private var folders: [Entry] = []
     private(set) var scanning = false
     private var measuredAt: Date?
@@ -474,6 +477,10 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         body.addArrangedSubview(statusLine)
         body.setCustomSpacing(6, after: statusLine)
         body.addArrangedSubview(folderArea)
+        volumesStack.orientation = .vertical
+        volumesStack.alignment = .leading
+        volumesStack.spacing = 0
+        body.addArrangedSubview(volumesStack)
 
         NSLayoutConstraint.activate([
             folderArea.widthAnchor.constraint(equalToConstant: Panel.width),
@@ -499,6 +506,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     override func willOpen() {
         refreshSpaces()
+        refreshVolumes()
         if measuredAt.map({ Date().timeIntervalSince($0) > 600 }) ?? true { measureFolders() }
     }
 
@@ -513,6 +521,34 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
                 self.bar.parts = now.rows.dropLast().map { (Double($0.barBytes) / Double(now.total), $0.color) }
             }
         }
+    }
+
+    /// Reads the external disks off the main thread (a stalled network share can hang the
+    /// read) and shows a section per disk mounted now, in mount order.
+    func refreshVolumes() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let volumes = externalVolumes()
+            DispatchQueue.main.async { self.showVolumes(volumes) }
+        }
+    }
+
+    private func showVolumes(_ volumes: [ExternalVolume]) {
+        var sections: [String: VolumeSection] = [:]
+        var inOrder: [VolumeSection] = []
+        for volume in volumes where sections[volume.uuid] == nil {
+            let section = volumeSections[volume.uuid] ?? VolumeSection(volume: volume)
+            section.update(volume: volume)
+            sections[volume.uuid] = section
+            inOrder.append(section)
+        }
+        volumeSections = sections  // a disk no longer mounted loses its section
+        volumesStack.setViews(inOrder, in: .top)
+        fitToContents()
+    }
+
+    /// Shows a made-up disk's section, so `--tooltips` lists its tooltips on any Mac.
+    func showSampleVolume(_ volume: ExternalVolume) {
+        showVolumes([volume])
     }
 
     /// Measures the folders again. The last measurement stays on screen until the new
@@ -857,6 +893,10 @@ func diskReport(folder: String?, minimumBytes: Int64, granted: GrantSet = GrantS
         print(space.title + "\t" + formatSize(space.bytes))
     }
     printTree(scanned(dataVolume), indent: 1)
+    // Then each external disk, as its section's Used row reads; nothing on it is opened.
+    for volume in externalVolumes() {
+        print(volume.name + "\t" + formatSize(volume.used) + " of " + formatSize(volume.total))
+    }
     return 0
 }
 

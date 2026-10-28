@@ -33,3 +33,42 @@ func externalVolumes() -> [ExternalVolume] {
                               isNetwork: !(values.volumeIsLocal ?? true))
     }
 }
+
+/// One external disk's section at the bottom of the Disk panel: its name as a caption,
+/// how much of it is used, a bar, and its folders, which stay private until granted.
+final class VolumeSection: NSView {
+    private(set) var volume: ExternalVolume
+    let usedRow = PanelRow("Used:")
+    let bar = SpaceBar()
+    let foldersRow = PanelRow("Folders")
+
+    init(volume: ExternalVolume) {
+        self.volume = volume
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        foldersRow.value.stringValue = "private"
+        foldersRow.value.textColor = .tertiaryLabelColor
+        // Top to bottom: caption 30, Used 22, bar 14, Folders 22.
+        let parts = [separatorView(volume.name), usedRow, bar, foldersRow]
+        for part in parts { addSubview(part) }
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: Panel.width),
+            parts[0].topAnchor.constraint(equalTo: topAnchor),
+            parts[1].topAnchor.constraint(equalTo: parts[0].bottomAnchor),
+            parts[2].topAnchor.constraint(equalTo: parts[1].bottomAnchor),
+            parts[3].topAnchor.constraint(equalTo: parts[2].bottomAnchor),
+            parts[3].bottomAnchor.constraint(equalTo: bottomAnchor),
+        ] + parts.map { $0.leadingAnchor.constraint(equalTo: leadingAnchor) })
+        update(volume: volume)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Shows the volume's figures as they are now.
+    func update(volume: ExternalVolume) {
+        self.volume = volume
+        usedRow.value.stringValue = "\(formatSize(volume.used)) of \(formatSize(volume.total))"
+        usedRow.hoverTip = twoLines("\(formatSize(volume.total - volume.used)) free. Space on this disk, not the startup disk.")
+        bar.parts = [(Double(volume.used) / Double(volume.total), .systemBlue)]
+    }
+}
