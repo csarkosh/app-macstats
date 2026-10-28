@@ -165,24 +165,28 @@ APFS volumes.
 **My apps / files**: that space broken down into folders three levels deep (100 MB and over,
 biggest first, an app as one row), measured by allocated blocks like `du -x`. That takes about a
 minute, so the panel keeps the last measurement for ten minutes and shows it (with
-"Remeasuring…") while it measures again. Private folders are listed by name but never opened, so
-they show no size and a folder holding one shows `≥`. Double-click a folder to show it in Finder,
-where Get Info gives a private folder's size.
+"Remeasuring…") while it measures again. Private folders are listed by name but never opened
+until you click Grant, so they show no size and a folder holding one shows `≥`. Double-click a
+folder to show it in Finder, where Get Info gives a private folder's size.
 
 **Grant**: point at a private Desktop, Documents, Downloads, Music or Movies row and a `Grant`
 button replaces the word `private`. Click it and MacStats opens that folder once; macOS asks
 whether to allow it, and on Allow the folder's size appears at once, counted into the folders
 above it, and stays. macOS asks only once, so after Don't Allow the row's Grant button opens
-System Settings, where the permission can be given. A grant lasts for this build of MacStats: an install built on
-your Mac (`make install`, Homebrew) asks again after each rebuild, while the signed release
-keeps it. Mail, Messages, Safari, other apps' data, cloud folders and the Trash never get a
-button, and MacStats never asks for Full Disk Access: they stay private, and Finder's Get Info
-gives their size.
+System Settings, where the permission can be given. A grant lasts for this build of MacStats:
+an install built on your Mac (`make install`, Homebrew) asks again after each rebuild, while
+the signed release keeps it. A folder made inside Music or Movies after your click (the Music
+and TV apps make theirs the first time they run) stays out of the size, shown as `≥`, until
+you click the row's Grant button again. Mail, Messages, Safari, other apps' data, cloud
+folders and the Trash never get a button, and MacStats never asks for Full Disk Access. Those
+folders stay private; Finder's Get Info gives their size.
 
 **External disks**: each disk plugged in gets its own section under the startup disk's, with
-its used and total space, which needs no permission. Click Grant on it and its folders appear
-three levels deep, like the startup disk's. Unplug it and the section goes; plug it back in
-and its last measurement shows at once.
+its used and total space, which needs no permission. Click Grant on its Folders row and its
+folders appear three levels deep, like the startup disk's. Each disk is granted on its own:
+macOS asks once for all removable disks, so a second disk's click shows no dialog, but MacStats
+opens no disk you have not clicked. Unplug it and the section goes; plug it back in and its
+last measurement shows at once.
 
 </td>
 </tr>

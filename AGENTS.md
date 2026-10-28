@@ -9,8 +9,8 @@ it; this file says how the code is arranged and how to change and release it.
 | Path | What |
 |---|---|
 | `Sources/MacStats/` | The app, one Swift module. One file per item (`CPU.swift`, `GPU.swift`, `RAM.swift`, `Temp.swift` with `Sensors.swift`, `SMC.swift`, `SensorCatalog.swift` and `Battery.swift`, `Disk.swift`, with `DiskGrants.swift`, `DiskVolumes.swift` and `DiskRows.swift` beside it), `MenuKit.swift` (the menu bar item, the panel window, rows, bars, gauges, sparklines, `twoLines`), `HoverTip.swift` (the panels' tooltips), `IOReport.swift` (the private counters the CPU and GPU readers use), `AppIcon.swift` (the icon, drawn in code), `main.swift` (the app delegate and the command line). |
-| `Sources/MacStats/DiskGrants.swift` | Which Disk rows can be granted (`grantKind(for:)`), `GrantStore` (the remembered grants, tied to the build's code signature), measuring one granted folder and splicing its size into the tree, and the System Settings panes the refusal offers. |
-| `Sources/MacStats/DiskVolumes.swift` | Finding the external disks, `VolumeSection` (a disk's section in the panel), each disk's saved measurement (`Caches/sh.csarko.MacStats/volumes/<uuid>.json`) and the panel's wiring for them. |
+| `Sources/MacStats/DiskGrants.swift` | Which Disk rows can be granted (`grantKind(for:)`), `GrantStore` (the remembered folders, disks by UUID, Music and Movies snapshots and refusals, tied to the build's designated requirement), measuring one granted folder and splicing its size into the tree, and the System Settings panes the refusal offers. |
+| `Sources/MacStats/DiskVolumes.swift` | Finding the external disks (the kernel's mount list, `getfsstat`, so a stalled network share cannot hang it), `VolumeSection` (a disk's section in the panel), each disk's saved measurement (`Caches/sh.csarko.MacStats/volumes/<uuid>.json`) and the panel's wiring for them. |
 | `Sources/MacStats/DiskRows.swift` | What the Disk panel's rows share: `SizeCell` (the size column with the Grant button and its spinner), the folder-list and status-line builders. |
 | `Tests/MacStatsTests/main.swift` | The tests: a program that runs the built `MacStats` through its command-line flags. `make test`. |
 | `docs/previews/` | The README's screenshots, taken by `scripts/previews.sh`: each panel in dark and light (real captures of the built app, with `--appearance` and `--show-panel --after --each`, the flags for screenshots), and `menubar.png`, the hero: a screenshot of the screen's top with the CPU panel open over the wallpaper, taken by hand, cut to 292 pt and faded at the bottom by `scripts/compose-hero.swift --finish` (a bare strip of the bar never reads as a menu bar; the screen's top edge, the system icons and a dropdown do). `previews.sh --hero` can compose one instead from captures of the bar, the wallpaper window and the CPU panel. Retake them when a panel's look changes. |
@@ -53,20 +53,34 @@ make app && open build/MacStats.app   # try it; quit the installed copy first (p
 make install                  # replace the installed copy with this checkout
 ```
 
+A panel can be rendered off-screen without opening it: build a small `main.swift` that makes
+the panel, calls `fitToContents()` and `cacheDisplay` on its `contentView`, and compile it
+with every file in `Sources/MacStats/` except `main.swift`.
+
 ### Hand-testing the Disk panel's grants
 
 The dialogs and the Grant button are not automated. Run the bundle, not the bare binary
 (`make app && open build/MacStats.app`, with the installed copy quit): a binary started from a
 terminal inherits the terminal's permissions, so macOS would ask on the terminal's behalf.
-Between tries, take the permissions back with `tccutil reset <name> sh.csarko.MacStats` for
-`SystemPolicyDesktopFolder`, `SystemPolicyDocumentsFolder`, `SystemPolicyDownloadsFolder`,
-`SystemPolicyRemovableVolumes`, `SystemPolicyNetworkVolumes` or `MediaLibrary`. After opening the
-panel, plugging in a drive, and restarting with grants in place, run the `tccd` log command above
-(`log show --last 10m --predicate ...`): it must show nothing you did not click.
 
-A panel can be rendered off-screen without opening it: build a small `main.swift` that makes
-the panel, calls `fitToContents()` and `cacheDisplay` on its `contentView`, and compile it
-with every file in `Sources/MacStats/` except `main.swift`.
+Between tries, quit MacStats and take the permissions back with
+`tccutil reset <name> sh.csarko.MacStats` for `SystemPolicyDesktopFolder`,
+`SystemPolicyDocumentsFolder`, `SystemPolicyDownloadsFolder`, `SystemPolicyRemovableVolumes`,
+`SystemPolicyNetworkVolumes` or `MediaLibrary`. Clear MacStats's own memory of them too, or
+rebuild (a rebuilt app counts no earlier grant): otherwise the next open measures a folder
+MacStats still thinks granted, and macOS, having forgotten its answer, asks without a click.
+
+```sh
+for key in grantedFolders grantedVolumes grantSnapshots refusedFolders grantsBuild; do
+  defaults delete sh.csarko.MacStats "$key"   # one key at a time; never the whole domain
+done
+rm -rf ~/Library/Caches/sh.csarko.MacStats/volumes
+```
+
+After opening the panel, plugging in a drive, and restarting with grants in place, run the
+`tccd` log command above (`log show --last 10m --predicate ...`): it must show nothing you did
+not click. The tests keep their grants in a throwaway suite (`MACSTATS_DEFAULTS_SUITE`, or
+`--grants --defaults-suite`), never in the app's own.
 
 ## Releasing
 
