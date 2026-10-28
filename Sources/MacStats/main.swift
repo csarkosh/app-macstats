@@ -283,10 +283,12 @@ if arguments.contains("--spaces") {
 }
 if arguments.contains("--volumes") {
     // Reads defaults and the app's own cache files only; no volume is opened.
-    let granted = GrantStore().load()
+    let store = GrantStore()
+    let granted = store.load()
     for volume in externalVolumes() {
         let open = volume.isNetwork ? granted.networkVolumes : granted.removableVolumes
-        let state = loadSavedVolume(volume.uuid)?.refused == true ? "no access" : open ? "granted" : "private"
+        let refused = loadSavedVolume(volume.uuid)?.isRefused(for: store.build) == true  // by this build
+        let state = refused ? "no access" : open ? "granted" : "private"
         print([volume.name, String(volume.used), String(volume.total), volume.mountPoint, state].joined(separator: "\t"))
     }
     exit(0)

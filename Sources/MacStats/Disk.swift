@@ -656,8 +656,13 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         return cell
     }
 
-    func outlineViewItemDidExpand(_ notification: Notification) { rowsMoved() }
-    func outlineViewItemDidCollapse(_ notification: Notification) { rowsMoved() }
+    // Only the startup disk's rows carry Grant buttons, so only its list's moves matter.
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        if notification.object as? NSOutlineView === outline { rowsMoved() }
+    }
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        if notification.object as? NSOutlineView === outline { rowsMoved() }
+    }
 
     // MARK: The Grant button on the hovered row
 

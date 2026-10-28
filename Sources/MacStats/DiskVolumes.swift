@@ -39,10 +39,27 @@ func externalVolumes() -> [ExternalVolume] {
 // MARK: - Remembering a disk's folders
 
 /// What is kept between runs for one external disk: its last folder list, or that macOS
-/// refused to let MacStats open it.
+/// refused to let MacStats open it, and the build that measured it. macOS ties its answer to
+/// the build, so a refusal another build got says nothing about this one.
 struct SavedVolume: Codable {
     var measurement: SavedMeasurement?
     var refused = false
+    var build: String?
+
+    /// Whether macOS refused this disk to `build`.
+    func isRefused(for build: String) -> Bool { refused && self.build == build }
+}
+
+extension SavedVolume {
+    // A file saved before a key existed lacks it, so each one has a default.
+    enum CodingKeys: String, CodingKey { case measurement, refused, build }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        measurement = try values.decodeIfPresent(SavedMeasurement.self, forKey: .measurement)
+        refused = try values.decodeIfPresent(Bool.self, forKey: .refused) ?? false
+        build = try values.decodeIfPresent(String.self, forKey: .build)
+    }
 }
 
 /// Where a disk's folder list is kept: `Caches/sh.csarko.MacStats/volumes/<uuid>.json`.
@@ -211,13 +228,17 @@ extension DiskPanel {
     private func showVolumes(_ volumes: [ExternalVolume]) {
         var sections: [String: VolumeSection] = [:]
         var inOrder: [VolumeSection] = []
+        var added: [VolumeSection] = []
         for volume in volumes where sections[volume.uuid] == nil {
             let section = volumeSections[volume.uuid] ?? newSection(volume)
+            if volumeSections[volume.uuid] == nil { added.append(section) }
             section.update(volume: volume)
             sections[volume.uuid] = section
             inOrder.append(section)
         }
         volumeSections = sections  // a disk no longer mounted loses its section
+        // Only now does the panel serve the new sections' lists, so a kept list shows at once.
+        for section in added { section.outline.reloadData() }
         volumesStack.setViews(inOrder, in: .top)
         fitToContents()
     }
@@ -229,16 +250,16 @@ extension DiskPanel {
             self.volumeHovered(section, inside: inside)
         }
         let saved = loadSavedVolume(volume.uuid)
-        if saved?.refused == true {
+        if saved?.isRefused(for: grants.build) == true {
             section.state = .refused
         } else if let measurement = saved?.measurement, mayOpen(volume) {
-            // A rebuilt app may open no disk, so its disks show private until granted again.
+            // A rebuilt app may open no disk, so its disks show private until granted again,
+            // and a refusal another build got shows private too: a click asks macOS afresh.
             section.state = .measured
             section.folders = measurement.folders.sorted(by: isLarger)
             section.measuredAt = measurement.measuredAt
         }
-        section.refresh()
-        section.outline.reloadData()
+        section.refresh()  // `showVolumes` reloads the list once the panel serves it
         return section
     }
 
@@ -257,9 +278,20 @@ extension DiskPanel {
         volume.isNetwork ? granted.networkVolumes : granted.removableVolumes
     }
 
+    /// Notes whether MacStats may open this kind of disk. Taking it back also puts every
+    /// measured disk of that kind back to private (its kept file stays), so none shows a list
+    /// that Measure again would no longer renew.
     private func setMayOpen(_ volume: ExternalVolume, _ allowed: Bool) {
         if volume.isNetwork { grants.set(networkVolumes: allowed) } else { grants.set(removableVolumes: allowed) }
         granted = grants.load()
+        guard !allowed else { return }
+        for section in volumeSections.values where section.volume.isNetwork == volume.isNetwork && section.state == .measured {
+            section.state = .ungranted
+            section.folders = []
+            section.measuredAt = nil
+            section.refresh()
+            section.outline.reloadData()
+        }
     }
 
     /// Grant on a disk's `Folders` row: MacStats may open that kind of disk from now on, and
@@ -278,24 +310,37 @@ extension DiskPanel {
         measureVolume(section, clicked: true)
     }
 
-    /// Measures a disk's folders three levels deep on `measureQueue`, its `Folders` row
-    /// spinning, or "Remeasuring…" showing over a list already shown. Called only on a Grant
-    /// click or while MacStats may open that kind of disk. A refusal, or after a click a disk
-    /// that would not open, takes that back, so no disk opens again without a click.
+    /// Measures a disk's folders three levels deep, its `Folders` row spinning, or
+    /// "Remeasuring…" showing over a list already shown. After a Grant click it runs at once on
+    /// its own queue, so macOS's dialog follows the click; otherwise it waits its turn on
+    /// `measureQueue` and, when its turn comes, runs only if MacStats may still open that kind
+    /// of disk (a refusal on another disk may have taken that back meanwhile). A refusal, or
+    /// after a click a disk that would not open, takes it back, so no disk opens again without
+    /// a click.
     private func measureVolume(_ section: VolumeSection, clicked: Bool) {
         guard !section.measuring else { return }
         section.measuring = true
         section.refresh()
         let volume = section.volume
         let target = GrantTarget(path: volume.mountPoint, depth: folderDepth, users: nil)
-        let granted = granted
-        measureQueue.async { [weak self] in
-            let measurement = measureGranted(target, granted: granted)
+        let store = grants
+        let queue = clicked ? DispatchQueue.global(qos: .userInitiated) : measureQueue
+        queue.async { [weak self] in
+            let granted = store.load()
+            let allowed = volume.isNetwork ? granted.networkVolumes : granted.removableVolumes
+            let measurement = clicked || allowed ? measureGranted(target, granted: granted) : nil
             DispatchQueue.main.async { self?.showMeasurement(measurement, of: volume, clicked: clicked) }
         }
     }
 
-    private func showMeasurement(_ measurement: GrantMeasurement, of volume: ExternalVolume, clicked: Bool) {
+    /// Shows what measuring a disk found; nil when it was skipped, the permission gone.
+    private func showMeasurement(_ measurement: GrantMeasurement?, of volume: ExternalVolume, clicked: Bool) {
+        guard let measurement else {
+            granted = grants.load()
+            volumeSections[volume.uuid]?.measuring = false
+            volumeSections[volume.uuid]?.refresh()
+            return
+        }
         switch measurement {
         case .refused: setMayOpen(volume, false)
         case .unchanged where clicked: setMayOpen(volume, false)
@@ -309,13 +354,14 @@ extension DiskPanel {
             section.state = .refused
             section.folders = []
             section.measuredAt = nil
-            saveVolume(SavedVolume(refused: true), uuid: volume.uuid)
+            saveVolume(SavedVolume(refused: true, build: grants.build), uuid: volume.uuid)
         case let .measured(_, _, _, children):
             let now = Date()
             section.state = .measured
             section.folders = children.sorted(by: isLarger)
             section.measuredAt = now
-            saveVolume(SavedVolume(measurement: SavedMeasurement(measuredAt: now, folders: section.folders)), uuid: volume.uuid)
+            saveVolume(SavedVolume(measurement: SavedMeasurement(measuredAt: now, folders: section.folders), build: grants.build),
+                       uuid: volume.uuid)
         case .unchanged:
             break  // gone, say: what was shown stays
         }
