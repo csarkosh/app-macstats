@@ -338,7 +338,12 @@ struct SavedMeasurement: Codable {
 
 // MARK: - The panel
 
-let foldersHeight: CGFloat = 22 * 15
+/// The startup disk's folder list: the height it takes when the screen has room, and the
+/// fewest rows it is cut to when it has not. Cut lists scroll.
+let foldersHeight: CGFloat = Panel.row * 15
+let foldersMinimumHeight: CGFloat = Panel.row * 8
+/// Fewest rows an external disk's list is cut to.
+let volumeMinimumHeight: CGFloat = Panel.row * 3
 
 final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegate {
     let outline = NSOutlineView()
@@ -358,6 +363,8 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     private let spaceList = NSStackView()
     /// A section per external disk, keyed by the volume's UUID, under the folder list.
     var volumeSections: [String: VolumeSection] = [:]
+    /// The startup list's height; `fitToContents` sets it to fit the screen.
+    private var foldersHeightConstraint: NSLayoutConstraint!
     let volumesStack = NSStackView()
     private var folders: [Entry] = []
     private(set) var scanning = false
@@ -441,6 +448,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         measuringNote.translatesAutoresizingMaskIntoConstraints = false
         let folderArea = NSView()
         folderArea.translatesAutoresizingMaskIntoConstraints = false
+        foldersHeightConstraint = folderArea.heightAnchor.constraint(equalToConstant: foldersHeight)
         folderArea.addSubview(scroll)
         folderArea.addSubview(measuringNote)
         body.addArrangedSubview(measuredLine)
@@ -453,7 +461,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
 
         NSLayoutConstraint.activate([
             folderArea.widthAnchor.constraint(equalToConstant: Panel.width),
-            folderArea.heightAnchor.constraint(equalToConstant: foldersHeight),
+            foldersHeightConstraint,
             scroll.leadingAnchor.constraint(equalTo: folderArea.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: folderArea.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: folderArea.topAnchor),
@@ -471,6 +479,30 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         refreshSpaces()
         if measuredAt.map({ Date().timeIntervalSince($0) > 600 }) ?? true { measureFolders() }
         refreshVolumes(remeasuringOlderThan: 600)
+    }
+
+    /// Fits the panel to its contents and to the screen. Every list starts at the height it
+    /// would like; while the panel is taller than the screen allows, the tallest external
+    /// disk's list loses a row (down to three), then the startup list loses rows (down to
+    /// eight). A shortened list scrolls for the rest.
+    override func fitToContents() {
+        let sections = volumeSections.values.filter { $0.state == .measured }
+        for section in sections { section.listHeight.constant = section.preferredHeight }
+        foldersHeightConstraint.constant = foldersHeight
+        var excess = heightNeeded() - maximumHeight()  // heights add up, so one measurement serves
+        // Each pass takes a row from one list, and every list has a floor, so this ends.
+        while excess > 0 {
+            if let tallest = sections.max(by: { $0.listHeight.constant < $1.listHeight.constant }),
+               tallest.listHeight.constant - Panel.row >= volumeMinimumHeight {
+                tallest.listHeight.constant -= Panel.row
+            } else if foldersHeightConstraint.constant - Panel.row >= foldersMinimumHeight {
+                foldersHeightConstraint.constant -= Panel.row
+            } else {
+                break
+            }
+            excess -= Panel.row
+        }
+        super.fitToContents()
     }
 
     func refreshSpaces() {

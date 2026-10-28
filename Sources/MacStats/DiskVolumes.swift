@@ -102,8 +102,10 @@ final class VolumeSection: NSView {
     let status = NSTextField(labelWithString: "")
     let remeasuring = NSTextField(labelWithString: "Remeasuring…")
     let outline = NSOutlineView()
-    /// The list's height: a row per top-level folder, at least one and at most eight.
+    /// The list's height. The panel sets it: `preferredHeight`, or less when the screen is short.
     private(set) var listHeight: NSLayoutConstraint!
+    /// Asks the panel to fit itself again; set once the section is in the panel.
+    var refit: (() -> Void)?
     var state = VolumeState.ungranted
     var folders: [Entry] = []
     var measuredAt: Date?
@@ -165,6 +167,10 @@ final class VolumeSection: NSView {
         bar.parts = [(Double(volume.used) / Double(volume.total), .systemBlue)]
     }
 
+    /// The rows the list would like: one per top-level folder, at least one and at most eight.
+    var topLevelRows: Int { min(max(folders.count, 1), 8) }
+    var preferredHeight: CGFloat { Panel.row * CGFloat(topLevelRows) }
+
     /// Whether the `Folders` row offers Grant now: before a grant or after a refusal, while
     /// nothing is being measured, for a disk mounted where macOS asks about it.
     var canGrant: Bool {
@@ -192,7 +198,8 @@ final class VolumeSection: NSView {
         grantCell.measuring = measuring && !measured  // hides the button too
         status.stringValue = lastMeasuredText(measuredAt)
         remeasuring.isHidden = !(measuring && measured)
-        listHeight.constant = Panel.row * CGFloat(min(max(folders.count, 1), 8))
+        listHeight.constant = preferredHeight
+        refit?()  // the panel cuts the list again if the screen is short
     }
 
     override func mouseEntered(with event: NSEvent) { hovered?(true) }
@@ -260,6 +267,7 @@ extension DiskPanel {
             section.measuredAt = measurement.measuredAt
         }
         section.refresh()  // `showVolumes` reloads the list once the panel serves it
+        section.refit = { [weak self] in self?.fitToContents() }
         return section
     }
 
@@ -365,9 +373,8 @@ extension DiskPanel {
         case .unchanged:
             break  // gone, say: what was shown stays
         }
-        section.refresh()
+        section.refresh()  // fits the panel again
         section.outline.reloadData()
-        fitToContents()
     }
 
     /// The mouse came onto or left a disk's `Folders` row: its button fades in or out, and any

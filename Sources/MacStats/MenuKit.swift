@@ -624,6 +624,20 @@ class StatsPanel: NSWindow, NSWindowDelegate {
         }
     }
 
+    /// The tallest the panel may be: its screen's usable height (below the menu bar, above the
+    /// Dock) less a margin. Before the panel has a screen it is the main screen's.
+    func maximumHeight() -> CGFloat {
+        guard let screen = screen ?? NSScreen.main else { return 800 }
+        return screen.visibleFrame.height - 6
+    }
+
+    /// The height the contents want as they are laid out now.
+    func heightNeeded() -> CGFloat {
+        guard let content = contentView else { return 0 }
+        content.layoutSubtreeIfNeeded()
+        return content.fittingSize.height
+    }
+
     /// Fits the panel to its contents, keeping its top edge where it is.
     func fitToContents() {
         guard let content = contentView else { return }
