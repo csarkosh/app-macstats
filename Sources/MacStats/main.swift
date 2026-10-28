@@ -29,6 +29,7 @@
 //   MacStats --legend                   # prints the Disk panel's Spaces rows, in order
 //   MacStats --report [folder] [--min-mb N] [--granted <path>]… [--then-grant <path>]  # prints the Disk panel's folders, opening the granted ones; --then-grant measures that folder alone afterwards and splices it in; with no folder, ends with each external disk's used space
 //   MacStats --read-measurement <file|-> [--granted <path>]…  # prints the folders of a saved measurement as the panel shows it (- reads standard input)
+//   MacStats --item-positions               # prints each menu bar item's saved position (the registered defaults give the order)
 //   MacStats --grantable <path>             # prints dialog, none or "not private": whether a private row gets Grant
 
 import Cocoa

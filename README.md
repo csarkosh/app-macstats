@@ -10,9 +10,11 @@
 
 Each item is a small label over a value, at one width whatever it shows, so nothing beside it
 shifts. All five update every second, together for well under 1% of one core. MacStats asks for
-no permissions and causes no privacy prompts: it never opens the folders macOS guards (Desktop,
-Documents, Downloads, Photos, Mail, other apps' data), and reads sensors and the GPU through
-public APIs plus the private ones the [Stats](https://github.com/exelban/stats) app reads.
+no permissions on its own and causes no privacy prompts: the only one it ever causes is the one
+you ask for by clicking Grant on a private folder in the Disk panel. Until then it never opens
+the folders macOS guards (Desktop, Documents, Downloads, Photos, Mail, other apps' data), and it
+reads sensors and the GPU through public APIs plus the private ones the
+[Stats](https://github.com/exelban/stats) app reads.
 
 Built for Apple silicon (an M1 or later); an Intel Mac gets the same items from the sensors its
 chip reports, untested.
@@ -167,6 +169,21 @@ minute, so the panel keeps the last measurement for ten minutes and shows it (wi
 they show no size and a folder holding one shows `≥`. Double-click a folder to show it in Finder,
 where Get Info gives a private folder's size.
 
+**Grant**: point at a private Desktop, Documents, Downloads, Music or Movies row and a `Grant`
+button replaces the word `private`. Click it and MacStats opens that folder once; macOS asks
+whether to allow it, and on Allow the folder's size appears at once, counted into the folders
+above it, and stays. macOS asks only once, so after Don't Allow the row's Grant button opens
+System Settings, where the permission can be given. A grant lasts for this build of MacStats: an install built on
+your Mac (`make install`, Homebrew) asks again after each rebuild, while the signed release
+keeps it. Mail, Messages, Safari, other apps' data, cloud folders and the Trash never get a
+button, and MacStats never asks for Full Disk Access: they stay private, and Finder's Get Info
+gives their size.
+
+**External disks**: each disk plugged in gets its own section under the startup disk's, with
+its used and total space, which needs no permission. Click Grant on it and its folders appear
+three levels deep, like the startup disk's. Unplug it and the section goes; plug it back in
+and its last measurement shows at once.
+
 </td>
 </tr>
 </table>
@@ -179,6 +196,8 @@ prints what the panels show, for scripts and agents:
 ```
 MacStats --cpu | --gpu | --memory | --sensors    # a panel's figures, tab-separated
 MacStats --spaces | --legend | --report [folder]  # the Disk panel's spaces, rows, folders
+MacStats --volumes                                 # each external disk: name, used, total, mount point, access
+MacStats --grantable <path>                        # whether a Disk row gets Grant: dialog, none or not private
 MacStats --render cpu|gpu|ram|temp|disk out.png   # draws that menu bar item
 MacStats --tooltips                                # every panel's tooltips
 MacStats --heat "<row>" <°C> | --weigh <°C …> | --power-level <W>

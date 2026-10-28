@@ -1,7 +1,7 @@
 #!/bin/bash
 # Takes the README's screenshots into docs/previews/: the menu bar group, and each panel
-# in dark and light. Real captures, not renders: it quits the running MacStats, runs the
-# one in build/ (make app first) with --appearance and --show-panel, waits three minutes
+# in dark and light. Real captures, not renders: it quits the running MacStats, opens the
+# one in build/ as an app (make app first) with --appearance and --show-panel, waits three minutes
 # for the charts to fill, captures each panel's window with screencapture, then starts
 # the installed MacStats again. Needs Screen Recording permission for the terminal.
 #
@@ -70,7 +70,11 @@ xcrun swiftc "$HELPER.swift" -o "$HELPER" 2>/dev/null
 pkill -x MacStats || true
 sleep 1
 for look in dark light; do
-  "$APP" --appearance "$look" --show-panel cpu,gpu,ram,temp,disk --after "$WAIT" --each 8 >/dev/null 2>&1 &
+  # Launched as an app, not run straight from the shell: a folder the Disk panel has been
+  # granted must open under MacStats' own identity, and a program started by the shell
+  # takes on the terminal's. open -W waits for the app; $! is open's pid, so the app itself
+  # is stopped with pkill at the end of the look.
+  open -n -W "$ROOT/build/MacStats.app" --args --appearance "$look" --show-panel cpu,gpu,ram,temp,disk --after "$WAIT" --each 8 >/dev/null 2>&1 &
   PID=$!
   sleep "$((WAIT + 4))"
   for panel in cpu gpu ram temp disk; do
@@ -95,6 +99,7 @@ for look in dark light; do
     fi
     rm -f "$OUT/bar.png" "$OUT/wallpaper.png" && echo "composed menubar"
   fi
+  pkill -x MacStats || true
   kill "$PID" 2>/dev/null || true
   sleep 1
 done

@@ -8,7 +8,10 @@ it; this file says how the code is arranged and how to change and release it.
 
 | Path | What |
 |---|---|
-| `Sources/MacStats/` | The app, one Swift module. One file per item (`CPU.swift`, `GPU.swift`, `RAM.swift`, `Temp.swift` with `Sensors.swift`, `SMC.swift`, `SensorCatalog.swift` and `Battery.swift`, `Disk.swift`), `MenuKit.swift` (the menu bar item, the panel window, rows, bars, gauges, sparklines, `twoLines`), `HoverTip.swift` (the panels' tooltips), `IOReport.swift` (the private counters the CPU and GPU readers use), `AppIcon.swift` (the icon, drawn in code), `main.swift` (the app delegate and the command line). |
+| `Sources/MacStats/` | The app, one Swift module. One file per item (`CPU.swift`, `GPU.swift`, `RAM.swift`, `Temp.swift` with `Sensors.swift`, `SMC.swift`, `SensorCatalog.swift` and `Battery.swift`, `Disk.swift`, with `DiskGrants.swift`, `DiskVolumes.swift` and `DiskRows.swift` beside it), `MenuKit.swift` (the menu bar item, the panel window, rows, bars, gauges, sparklines, `twoLines`), `HoverTip.swift` (the panels' tooltips), `IOReport.swift` (the private counters the CPU and GPU readers use), `AppIcon.swift` (the icon, drawn in code), `main.swift` (the app delegate and the command line). |
+| `Sources/MacStats/DiskGrants.swift` | Which Disk rows can be granted (`grantKind(for:)`), `GrantStore` (the remembered grants, tied to the build's code signature), measuring one granted folder and splicing its size into the tree, and the System Settings panes the refusal offers. |
+| `Sources/MacStats/DiskVolumes.swift` | Finding the external disks, `VolumeSection` (a disk's section in the panel), each disk's saved measurement (`Caches/sh.csarko.MacStats/volumes/<uuid>.json`) and the panel's wiring for them. |
+| `Sources/MacStats/DiskRows.swift` | What the Disk panel's rows share: `SizeCell` (the size column with the Grant button and its spinner), the folder-list and status-line builders. |
 | `Tests/MacStatsTests/main.swift` | The tests: a program that runs the built `MacStats` through its command-line flags. `make test`. |
 | `docs/previews/` | The README's screenshots, taken by `scripts/previews.sh`: each panel in dark and light (real captures of the built app, with `--appearance` and `--show-panel --after --each`, the flags for screenshots), and `menubar.png`, the hero: a screenshot of the screen's top with the CPU panel open over the wallpaper, taken by hand, cut to 292 pt and faded at the bottom by `scripts/compose-hero.swift --finish` (a bare strip of the bar never reads as a menu bar; the screen's top edge, the system icons and a dropdown do). `previews.sh --hero` can compose one instead from captures of the bar, the wallpaper window and the CPU panel. Retake them when a panel's look changes. |
 | `scripts/bundle.sh` | Assembles `build/MacStats.app` from the built binary: Info.plist with the version from `VERSION`, the icon, and a signature: ad-hoc, or the Developer ID's (hardened runtime, timestamp) when `CODESIGN_IDENTITY` names it. `scripts/notarize.sh` sends a zip of that to Apple, staples the ticket and rewrites the zip; `.github/workflows/release.yml` runs both (see Releasing). |
@@ -27,11 +30,12 @@ The Homebrew formula lives in [`csarkosh/homebrew-tap`](https://github.com/csark
   bar shows) and its panel (what drops down). What two items share goes in `MenuKit.swift`.
   A command-line flag in `main.swift` prints what each panel shows, so a change can be checked
   from a terminal and the tests can read it.
-- **No permission prompts.** Nothing MacStats reads may trigger a macOS privacy prompt: no
-  guarded folders (Desktop, Documents, Downloads, Music, Movies, cloud folders, other apps'
-  containers, Mail, Messages, Photos), no screen recording, no input monitoring. Check a
-  change with `log show --predicate 'process == "tccd" AND eventMessage CONTAINS
-  "sh.csarko.MacStats"'` after running it.
+- **No prompts the user did not ask for.** The one allowed trigger is a click on Grant in the
+  Disk panel; nothing else MacStats does may cause a macOS privacy dialog: no guarded folders
+  (Desktop, Documents, Downloads, Music, Movies, cloud folders, other apps' containers, Mail,
+  Messages, Photos), no screen recording, no input monitoring. Command-line flags and tests
+  never open a guarded folder. Check a change with `log show --predicate 'process == "tccd" AND
+  eventMessage CONTAINS "sh.csarko.MacStats"'` after running it.
 - **Tooltips** are at most two short lines (`twoLines`), on every legend key; `MacStats
   --tooltips` lists them and a test fails a key without one.
 - **Fixed-width items**: each menu bar item is as wide as its widest value (`100%`,
@@ -48,6 +52,17 @@ make test                     # builds a debug MacStats and runs the tests again
 make app && open build/MacStats.app   # try it; quit the installed copy first (pkill -x MacStats)
 make install                  # replace the installed copy with this checkout
 ```
+
+### Hand-testing the Disk panel's grants
+
+The dialogs and the Grant button are not automated. Run the bundle, not the bare binary
+(`make app && open build/MacStats.app`, with the installed copy quit): a binary started from a
+terminal inherits the terminal's permissions, so macOS would ask on the terminal's behalf.
+Between tries, take the permissions back with `tccutil reset <name> sh.csarko.MacStats` for
+`SystemPolicyDesktopFolder`, `SystemPolicyDocumentsFolder`, `SystemPolicyDownloadsFolder`,
+`SystemPolicyRemovableVolumes`, `SystemPolicyNetworkVolumes` or `MediaLibrary`. After opening the
+panel, plugging in a drive, and restarting with grants in place, run the `tccd` log command above
+(`log show --last 10m --predicate ...`): it must show nothing you did not click.
 
 A panel can be rendered off-screen without opening it: build a small `main.swift` that makes
 the panel, calls `fitToContents()` and `cacheDisplay` on its `contentView`, and compile it
