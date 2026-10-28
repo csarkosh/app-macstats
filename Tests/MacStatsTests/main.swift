@@ -388,6 +388,14 @@ test("lists the disk's five spaces in order") {
                ["macOS system", "update/boot", "recovery", "swap", "my apps / files"], "the five spaces")
 }
 
+test("ships the menu bar items' order, CPU to Disk from the left") {
+    let rows = try macStats("--item-positions").lines.map { $0.components(separatedBy: "\t") }
+    checkEqual(rows.map { $0[0] }, ["MacStatsCPU", "MacStatsGPU", "MacStatsRAM", "MacStatsTemp", "MacStatsDisk"], "the names")
+    let positions = rows.compactMap { Double($0[1]) }
+    check(positions == positions.sorted(by: >), "a larger number sits further left, so they descend")
+    checkEqual(positions.count, 5, "every item has a position")
+}
+
 /// Writes files of the given sizes under a fresh folder and returns the Disk panel's report of it.
 func tree(_ files: [(String, Double)]) throws -> [String] {
     let dir = try tempDir("tree")

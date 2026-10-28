@@ -120,6 +120,17 @@ func fail(_ message: String) -> Never {
     exit(2)
 }
 
+// The order the items take in the menu bar, left to right (macOS puts a larger number
+// further left). Registered, not set, so a place the user dragged an item to still wins.
+let itemPositions: [(name: String, position: Double)] = [
+    ("MacStatsCPU", 1300), ("MacStatsGPU", 1250), ("MacStatsRAM", 1200), ("MacStatsTemp", 1150), ("MacStatsDisk", 1100),
+]
+// Tooltips appear after 0.75 s rather than AppKit's 1.5 s; registered too, so a delay the
+// user chose themselves (NSInitialToolTipDelay, in ms) still wins.
+var shippedDefaults: [String: Any] = ["NSInitialToolTipDelay": 750]
+for item in itemPositions { shippedDefaults["NSStatusItem Preferred Position \(item.name)"] = item.position }
+UserDefaults.standard.register(defaults: shippedDefaults)
+
 if arguments.contains("--render") {
     guard let index = arguments.firstIndex(of: "--render"), index + 2 < arguments.count else {
         fail("usage: MacStats --render cpu|gpu|ram|temp|disk <out.png>")
@@ -182,6 +193,14 @@ func tooltipsReport() -> Int32 {
     return 0
 }
 
+if arguments.contains("--item-positions") {
+    for item in itemPositions {
+        let position = UserDefaults.standard.double(forKey: "NSStatusItem Preferred Position \(item.name)")
+        print(item.name + "\t" + String(format: "%.0f", position))
+    }
+    exit(0)
+}
+
 if arguments.contains("--version") {
     // Stamped into Info.plist by scripts/bundle.sh from VERSION; a bare binary has none.
     print(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unbundled")
@@ -240,9 +259,6 @@ if arguments.contains("--report") {
     exit(diskReport(folder: argument(after: "--report"), minimumBytes: minimumBytes))
 }
 
-// Tooltips appear after 0.75 s rather than AppKit's 1.5 s. Registered, not set, so a
-// delay the user chose themselves (NSInitialToolTipDelay, in ms) still wins.
-UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 750])
 let app = NSApplication.shared
 if let appearance = argument(after: "--appearance") {
     app.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
