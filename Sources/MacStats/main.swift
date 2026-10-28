@@ -26,7 +26,8 @@
 //   MacStats --spaces                       # prints the disk's five volume spaces
 //   MacStats --volumes                      # prints each external disk: name, used, total, mount point, state
 //   MacStats --legend                     # prints the Disk panel's Spaces rows, in order
-//   MacStats --report [folder] [--min-mb N] # prints the Disk panel's folders
+//   MacStats --report [folder] [--min-mb N] [--granted <path>]…  # prints the Disk panel's folders, opening the granted ones
+//   MacStats --grantable <path>             # prints dialog, none or "not private": whether a private row gets Grant
 
 import Cocoa
 
@@ -261,9 +262,17 @@ if arguments.contains("--volumes") {
     }
     exit(0)
 }
+if let path = argument(after: "--grantable") {
+    print(grantKind(for: path).rawValue)  // string rules only: never opens the path
+    exit(0)
+}
 if arguments.contains("--report") {
     let minimumBytes = argument(after: "--min-mb").flatMap(Int64.init).map { $0 * 1_000_000 } ?? defaultMinimumBytes
-    exit(diskReport(folder: argument(after: "--report"), minimumBytes: minimumBytes))
+    var granted = GrantSet()  // the value after each --granted, as a canonical path
+    for (index, flag) in arguments.enumerated() where flag == "--granted" && index + 1 < arguments.count {
+        granted.folders.insert(canonicalPath(arguments[index + 1]))
+    }
+    exit(diskReport(folder: argument(after: "--report"), minimumBytes: minimumBytes, granted: granted))
 }
 
 let app = NSApplication.shared

@@ -190,11 +190,16 @@ let privatePackageExtensions: Set<String> = [
 /// Folders under `root`, down to `depth` levels, each at least `minimumBytes`,
 /// biggest first. Counts allocated blocks like du (a cloned file counts in full,
 /// a hard-linked one once) and stays on root's volume. Private folders are listed
-/// but never opened, so measuring causes no privacy prompt.
-func scanFolders(_ root: String, depth: Int = folderDepth, minimumBytes: Int64 = defaultMinimumBytes) -> [Entry] {
+/// but never opened, so measuring causes no privacy prompt, except those in `granted`,
+/// which are measured like any other. `Volumes` is neither opened nor listed. A walked
+/// path is compared to `granted.folders` in its canonical form.
+func scanFolders(
+    _ root: String, depth: Int = folderDepth, minimumBytes: Int64 = defaultMinimumBytes, granted: GrantSet = GrantSet()
+) -> [Entry] {
     let rootPath = root.count > 1 && root.hasSuffix("/") ? String(root.dropLast()) : root
     let base = rootPath == "/" ? "" : rootPath
-    var privatePaths: Set<String> = [base + "/Volumes"]  // removable and network volumes
+    let volumes = base + "/Volumes"  // removable and network disks
+    var privatePaths: Set<String> = []
     let users = base + "/Users"
     // Listing the folder of homes names them without opening any.
     for name in (try? FileManager.default.contentsOfDirectory(atPath: users)) ?? [] {
@@ -222,6 +227,10 @@ func scanFolders(_ root: String, depth: Int = folderDepth, minimumBytes: Int64 =
         switch Int32(entry.pointee.fts_info) {
         case FTS_D:
             let path = String(cString: entry.pointee.fts_path)
+            if level == 1 && path == volumes {
+                fts_set(fts, entry, FTS_SKIP)  // not listed: the disks have their own rows
+                continue
+            }
             if level >= 1 && level <= depth {
                 let folder = Entry(title: (path as NSString).lastPathComponent, path: path)
                 ancestors[level] = folder
@@ -231,8 +240,9 @@ func scanFolders(_ root: String, depth: Int = folderDepth, minimumBytes: Int64 =
                     parent.children.append(folder)  // an app is one row
                 }
             }
-            if privatePaths.contains(path)
-                || privatePackageExtensions.contains((path as NSString).pathExtension.lowercased()) {
+            if !granted.folders.contains(canonicalPath(path))
+                && (privatePaths.contains(path)
+                    || privatePackageExtensions.contains((path as NSString).pathExtension.lowercased())) {
                 fts_set(fts, entry, FTS_SKIP)
                 if level >= 1 && level <= depth { ancestors[level]?.note = "private" }
                 markAncestorsPartial(below: level)
@@ -568,7 +578,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
 
 // Prints what the panel lists, as an indented tree. With a folder, prints only
 // that folder's tree, which keeps tests fast.
-func diskReport(folder: String?, minimumBytes: Int64) -> Int32 {
+func diskReport(folder: String?, minimumBytes: Int64, granted: GrantSet = GrantSet()) -> Int32 {
     func printTree(_ entries: [Entry], indent: Int) {
         for entry in entries {
             print(String(repeating: "  ", count: indent) + entry.title + "\t" + entry.sizeText)
@@ -576,7 +586,7 @@ func diskReport(folder: String?, minimumBytes: Int64) -> Int32 {
         }
     }
     if let folder {
-        printTree(scanFolders(folder, minimumBytes: minimumBytes), indent: 0)
+        printTree(scanFolders(folder, minimumBytes: minimumBytes, granted: granted), indent: 0)
         return 0
     }
     let spaces = volumeSpaces()
@@ -587,7 +597,7 @@ func diskReport(folder: String?, minimumBytes: Int64) -> Int32 {
     for space in spaces {
         print(space.title + "\t" + formatSize(space.bytes))
     }
-    printTree(scanFolders(dataVolume, minimumBytes: minimumBytes), indent: 1)
+    printTree(scanFolders(dataVolume, minimumBytes: minimumBytes, granted: granted), indent: 1)
     return 0
 }
 

@@ -409,8 +409,8 @@ test("ships the menu bar items' order, CPU to Disk from the left") {
 }
 
 /// Writes files of the given sizes under a fresh folder and returns the Disk panel's report of it.
-func tree(_ files: [(String, Double)]) throws -> [String] {
-    let dir = try tempDir("tree")
+/// Writes each file (path under `dir`, size in megabytes) with random contents.
+func writeTree(_ dir: URL, _ files: [(String, Double)]) throws {
     for (path, megabytes) in files {
         let url = dir.appendingPathComponent(path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -418,6 +418,11 @@ func tree(_ files: [(String, Double)]) throws -> [String] {
         for index in bytes.indices { bytes[index] = UInt8.random(in: 0...255) }
         try Data(bytes).write(to: url)
     }
+}
+
+func tree(_ files: [(String, Double)]) throws -> [String] {
+    let dir = try tempDir("tree")
+    try writeTree(dir, files)
     return try macStats("--report", dir.path, "--min-mb", "1").lines.map { $0.replacingOccurrences(of: "\t", with: " | ") }
 }
 
@@ -438,6 +443,32 @@ test("lists private folders by name without counting what is in them") {
         "Users | ≥ 7 MB", "  alice | ≥ 7 MB", "    Projects | 3 MB", "    Library | ≥ 2 MB", "    Pictures | ≥ 2 MB",
         "    Documents | private", "    Music | private",
     ], "the rows")
+}
+
+test("says which private rows can be granted") {
+    let home = "/Users/" + NSUserName()
+    checkEqual(try macStats("--grantable", home + "/Downloads").lines, ["dialog"], "Downloads")
+    checkEqual(try macStats("--grantable", home + "/Music").lines, ["dialog"], "Music")
+    checkEqual(try macStats("--grantable", "/Volumes/Some Disk").lines, ["dialog"], "a volume")
+    checkEqual(try macStats("--grantable", home + "/Library/Mail").lines, ["none"], "Mail")
+    checkEqual(try macStats("--grantable", home + "/Library/Containers").lines, ["none"], "containers")
+    checkEqual(try macStats("--grantable", home + "/Pictures/Photos Library.photoslibrary").lines, ["none"], "a photos library")
+    checkEqual(try macStats("--grantable", "/System/Volumes/Data" + home + "/Documents").lines, ["dialog"], "the data volume's spelling")
+    checkEqual(try macStats("--grantable", home + "/Documents/Deeper").lines, ["none"], "below a guarded folder")
+    checkEqual(try macStats("--grantable", try tempDir("plain").path).lines, ["not private"], "a plain folder")
+}
+
+test("counts a granted private folder and still skips the others") {
+    let dir = try tempDir("granted")
+    try writeTree(dir, [("Users/alice/Documents/a.bin", 4), ("Users/alice/Downloads/b.bin", 2), ("Users/alice/Code/c.bin", 1)])
+    let lines = try macStats("--report", dir.path, "--min-mb", "1", "--granted", dir.path + "/Users/alice/Documents").lines
+        .map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(lines, ["Users | ≥ 5 MB", "  alice | ≥ 5 MB", "    Documents | 4 MB", "    Code | 1 MB", "    Downloads | private"], "the rows")
+}
+
+test("lists no Volumes row") {
+    let lines = try tree([("Volumes/Disk/x.bin", 3), ("Stuff/y.bin", 2)])
+    checkEqual(lines, ["Stuff | 2 MB"], "Volumes is neither counted nor listed")
 }
 
 // MARK: - The verdict
