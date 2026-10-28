@@ -240,6 +240,9 @@ test("explains every legend key with a tooltip, and keeps every tooltip to two l
     checkEqual(keys("RAM"), ["App", "Wired", "Compressed", "Free", "Swap"], "the RAM keys")
     checkEqual(keys("Disk").sorted(), ["Free", "Purgeable", "macOS system", "my apps / files", "other", "recovery", "swap", "update/boot"], "the Disk keys")
     if chipHasSensors { check(!keys("Temp").isEmpty, "the Temp panel has rows") }
+    let diskOther = tips.filter { $0[0] == "Disk" && $0[1] == "other" }.map { $0[5] }
+    check(diskOther.contains { $0.hasPrefix("Opens this folder once") }, "the Grant button's tooltip")
+    check(diskOther.contains { $0.hasPrefix("macOS has no dialog for this folder") }, "the no-button tooltip")
     for tip in tips where tip.count == 6 {
         let (panel, kind, name, lines, widest, text) = (tip[0], tip[1], tip[2], Int(tip[3]) ?? 0, Int(tip[4]) ?? 0, tip[5])
         if kind == "key" { check(text.count >= 20, "\(panel) › \(name) explains itself (\(text.debugDescription))") }

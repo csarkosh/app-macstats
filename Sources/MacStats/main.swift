@@ -172,9 +172,20 @@ func tooltipsReport() -> Int32 {
     temp.update(reader.read())
     let gpu = GPUPanel(history: GPUHistory(), reader: reader)
     if let sample = GPUSampler().sample() { gpu.update(sample) }
+    // The Disk panel lists a fixed sample, so its rows' tooltips are listed whatever was
+    // measured last: a private folder with a Grant button, one without, and a measured one.
+    // The made-up home is spelled in parts, so the sources name no home directory.
+    let disk = DiskPanel()
+    let home = URL(fileURLWithPath: "/Users").appendingPathComponent("sample").path
+    let measured = Entry(title: "Applications", path: "/Applications", bytes: 12_000_000_000)
+    let downloads = Entry(title: "Downloads", path: home + "/Downloads")
+    downloads.note = "private"
+    let mail = Entry(title: "Mail", path: home + "/Library/Mail")
+    mail.note = "private"
+    disk.show([measured, downloads, mail], at: Date())
     let panels: [(String, StatsPanel)] = [
         ("CPU", CPUPanel(history: CPUHistory(), reader: reader)), ("GPU", gpu),
-        ("RAM", RAMPanel(history: MemoryHistory())), ("Temp", temp), ("Disk", DiskPanel()),
+        ("RAM", RAMPanel(history: MemoryHistory())), ("Temp", temp), ("Disk", disk),
     ]
     func tips(in view: NSView) -> [(kind: String, name: String, tip: String)] {
         if let row = view as? PanelRow, row.isKey {

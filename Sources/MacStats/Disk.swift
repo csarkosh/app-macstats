@@ -340,6 +340,85 @@ struct SavedMeasurement: Codable {
 
 let foldersHeight: CGFloat = 22 * 15
 
+/// The size column's cell: the size or note, and a Grant button shown over the note on hover.
+final class SizeCell: NSTableCellView {
+    let button: NSButton
+    /// Whether this row can carry a button (set per row).
+    var showsGrant = false
+    /// Whether the button is shown or fading in, so a fade out that ends after a new fade in
+    /// began leaves the button alone.
+    private var grantShown = false
+    /// Holds the button 1 pt low before it fades in, so it settles up into place.
+    private var settle: NSLayoutConstraint!
+
+    init(identifier: NSUserInterfaceItemIdentifier, target: AnyObject, action: Selector) {
+        button = NSButton(title: "Grant", target: target, action: action)
+        super.init(frame: .zero)
+        self.identifier = identifier
+        let text = NSTextField(labelWithString: "")
+        text.translatesAutoresizingMaskIntoConstraints = false
+        text.lineBreakMode = .byTruncatingMiddle
+        text.alignment = .right
+        text.font = .systemFont(ofSize: 12)
+        // Layers, so the text and the button can fade.
+        text.wantsLayer = true
+        addSubview(text)
+        textField = text
+
+        // A blue pill: the push bezel (once called rounded) in the accent colour, which
+        // titles itself in white. The inline bezel drew no pill at this size.
+        button.bezelStyle = .push
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: 11, weight: .semibold)
+        button.bezelColor = .controlAccentColor
+        button.hoverTip = twoLines("Opens this folder once; macOS asks you to allow it. MacStats remembers your answer.")
+        button.wantsLayer = true
+        button.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(button)
+        settle = button.centerYAnchor.constraint(equalTo: centerYAnchor)
+        NSLayoutConstraint.activate([
+            text.leadingAnchor.constraint(equalTo: leadingAnchor),
+            text.trailingAnchor.constraint(equalTo: trailingAnchor),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+            button.trailingAnchor.constraint(equalTo: trailingAnchor),
+            button.heightAnchor.constraint(equalToConstant: 18),
+            settle,
+        ])
+        setGrantVisible(false, animated: false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Fades the button in over the note (150 ms, rising 1 pt) or out (75 ms), on Material's
+    /// standard curve, the note fading the other way. With Reduce Motion on, or not
+    /// animated, the swap is immediate. A hidden button takes no clicks.
+    func setGrantVisible(_ visible: Bool, animated: Bool) {
+        grantShown = visible
+        if visible { button.isHidden = false }
+        guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            button.alphaValue = visible ? 1 : 0
+            textField?.alphaValue = visible ? 0 : 1
+            settle.constant = 0
+            button.isHidden = !visible
+            return
+        }
+        if visible {
+            settle.constant = 1  // 1 pt below its place: layout runs down the screen
+            layoutSubtreeIfNeeded()
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = visible ? 0.15 : 0.075
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
+            button.animator().alphaValue = visible ? 1 : 0
+            textField?.animator().alphaValue = visible ? 0 : 1
+            if visible { settle.animator().constant = 0 }
+        }, completionHandler: { [weak self] in
+            guard let self, !self.grantShown else { return }
+            self.button.isHidden = true
+        })
+    }
+}
+
 final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegate {
     let outline = NSOutlineView()
     /// Shown at the top of the empty folder list while measuring.
@@ -359,6 +438,9 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     private var folders: [Entry] = []
     private(set) var scanning = false
     private var measuredAt: Date?
+    /// The row under the mouse, or -1, and the tracking area that follows it.
+    private var hoveredRow = -1
+    private var rowHover: NSTrackingArea?
 
     init() {
         super.init(title: "Disk")
@@ -424,6 +506,16 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        // The row under the mouse, for the Grant button. HoverTracker's area on the content
+        // view goes on following it for the tooltips.
+        let hover = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                   owner: self, userInfo: nil)
+        outline.addTrackingArea(hover)
+        rowHover = hover
+        // Rows scrolled under a still mouse move the button to the row now under it.
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification,
+                                               object: scroll.contentView)
 
         // The time of the last measurement sits at the top, under the caption, above the
         // list. Before the first measurement the list is empty and the measuring note
@@ -513,9 +605,10 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         }
     }
 
-    private func show(_ measured: [Entry], at time: Date) {
+    func show(_ measured: [Entry], at time: Date) {
         folders = measured
         measuredAt = time
+        endHover()
         outline.reloadData()
         // Open the biggest branch, so its third level shows.
         var next = folders.first
@@ -593,6 +686,18 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let entry = item as? Entry, let id = tableColumn?.identifier else { return nil }
+        if id.rawValue == "size" {
+            // Reused for row after row: everything is set again, and the button starts hidden.
+            let cell = outlineView.makeView(withIdentifier: id, owner: self) as? SizeCell
+                ?? SizeCell(identifier: id, target: self, action: #selector(grantClicked(_:)))
+            cell.textField?.stringValue = entry.sizeText
+            cell.textField?.textColor = entry.note == nil ? .labelColor : .tertiaryLabelColor
+            cell.showsGrant = canGrant(entry)
+            cell.hoverTip = entry.note == "private" && !cell.showsGrant
+                ? twoLines("macOS has no dialog for this folder; Finder's Get Info gives its size.") : nil
+            cell.setGrantVisible(false, animated: false)
+            return cell
+        }
         let cell = outlineView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? {
             let cell = NSTableCellView()
             cell.identifier = id
@@ -608,18 +713,86 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
             ])
             return cell
         }()
-        if id.rawValue == "size" {
-            cell.textField?.stringValue = entry.sizeText
-            cell.textField?.alignment = .right
-            cell.textField?.font = .systemFont(ofSize: 12)
-            cell.textField?.textColor = entry.note == nil ? .labelColor : .tertiaryLabelColor
-        } else {
-            cell.textField?.stringValue = entry.title
-            cell.textField?.font = .systemFont(ofSize: 12)
-            cell.textField?.textColor = .secondaryLabelColor
-            cell.hoverTip = entry.path
-        }
+        cell.textField?.stringValue = entry.title
+        cell.textField?.font = .systemFont(ofSize: 12)
+        cell.textField?.textColor = .secondaryLabelColor
+        cell.hoverTip = entry.path
         return cell
+    }
+
+    func outlineViewItemDidExpand(_ notification: Notification) { rowsMoved() }
+    func outlineViewItemDidCollapse(_ notification: Notification) { rowsMoved() }
+
+    // MARK: The Grant button on the hovered row
+
+    /// Whether a row can carry a Grant button: a private folder, or one macOS refused after
+    /// a grant, that opening once makes macOS ask about.
+    private func canGrant(_ entry: Entry) -> Bool {
+        entry.note != nil && (entry.note == "private" || entry.refused) && grantKind(for: entry.path ?? "") == .dialog
+    }
+
+    /// Does nothing yet: the next change opens the folder and measures it.
+    @objc private func grantClicked(_ sender: NSButton) {}
+
+    // The tracking area on the outline sends its events to the panel; other events go on
+    // as before.
+    override func mouseEntered(with event: NSEvent) {
+        guard let rowHover, event.trackingArea === rowHover else { return super.mouseEntered(with: event) }
+        hover(rowAt: event.locationInWindow)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard let rowHover, event.trackingArea === rowHover else { return super.mouseMoved(with: event) }
+        hover(rowAt: event.locationInWindow)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard let rowHover, event.trackingArea === rowHover else { return super.mouseExited(with: event) }
+        hover(-1)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        endHover()
+        super.orderOut(sender)
+    }
+
+    private func hover(rowAt point: NSPoint) {
+        let local = outline.convert(point, from: nil)
+        hover(outline.visibleRect.contains(local) ? outline.row(at: local) : -1)
+    }
+
+    /// Fades the old row's button out and the new row's in, if it can carry one.
+    private func hover(_ row: Int) {
+        guard row != hoveredRow else { return }
+        if let cell = sizeCell(at: hoveredRow) { cell.setGrantVisible(false, animated: true) }
+        hoveredRow = row
+        if let cell = sizeCell(at: row), cell.showsGrant { cell.setGrantVisible(true, animated: true) }
+    }
+
+    /// Hides any button at once and forgets the hovered row: before the rows are reloaded,
+    /// and when the panel closes.
+    private func endHover() {
+        outline.enumerateAvailableRowViews { rowView, _ in
+            for case let cell as SizeCell in rowView.subviews { cell.setGrantVisible(false, animated: false) }
+        }
+        hoveredRow = -1
+    }
+
+    /// The list scrolled under a still mouse: the button goes to the row now under it.
+    @objc private func scrolled() {
+        if isVisible { hover(rowAt: mouseLocationOutsideOfEventStream) }
+    }
+
+    /// A folder opened or closed, so the rows below it moved and the hovered row's number
+    /// no longer names it: start again from the row under the mouse.
+    private func rowsMoved() {
+        endHover()
+        scrolled()
+    }
+
+    private func sizeCell(at row: Int) -> SizeCell? {
+        guard row >= 0, row < outline.numberOfRows else { return nil }
+        return outline.view(atColumn: outline.column(withIdentifier: .init("size")), row: row, makeIfNecessary: false) as? SizeCell
     }
 }
 
