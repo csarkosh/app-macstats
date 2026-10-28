@@ -53,12 +53,29 @@ final class Entry: Codable {
     var note: String?
     /// True when a folder inside this one was not counted, so the size is a minimum.
     var partial = false
+    /// True when "no access" is macOS refusing a folder the person granted, as opposed to
+    /// a folder the scan could not read on its own.
+    var refused = false
     var children: [Entry] = []
 
     init(title: String, path: String? = nil, bytes: Int64 = 0) {
         self.title = title
         self.path = path
         self.bytes = bytes
+    }
+
+    // A measurement saved by an earlier release lacks the newer keys, so each one has a default.
+    enum CodingKeys: String, CodingKey { case title, path, bytes, note, partial, refused, children }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        title = try values.decode(String.self, forKey: .title)
+        path = try values.decodeIfPresent(String.self, forKey: .path)
+        bytes = try values.decode(Int64.self, forKey: .bytes)
+        note = try values.decodeIfPresent(String.self, forKey: .note)
+        partial = try values.decodeIfPresent(Bool.self, forKey: .partial) ?? false
+        refused = try values.decodeIfPresent(Bool.self, forKey: .refused) ?? false
+        children = try values.decodeIfPresent([Entry].self, forKey: .children) ?? []
     }
 
     var sizeText: String {
@@ -196,11 +213,20 @@ let privatePackageExtensions: Set<String> = [
 func scanFolders(
     _ root: String, depth: Int = folderDepth, minimumBytes: Int64 = defaultMinimumBytes, granted: GrantSet = GrantSet()
 ) -> [Entry] {
+    scanTree(root, depth: depth, minimumBytes: minimumBytes, granted: granted).folders
+}
+
+/// What `scanFolders` finds, plus the size of `root` itself and whether something inside it
+/// was left uncounted. `users` is the folder of homes; it is `root`'s `Users` unless the
+/// scan is of one folder inside a tree measured from higher up.
+func scanTree(
+    _ root: String, depth: Int, minimumBytes: Int64, granted: GrantSet, users usersFolder: String? = nil
+) -> (folders: [Entry], bytes: Int64, partial: Bool) {
     let rootPath = root.count > 1 && root.hasSuffix("/") ? String(root.dropLast()) : root
     let base = rootPath == "/" ? "" : rootPath
     let volumes = base + "/Volumes"  // removable and network disks
     var privatePaths: Set<String> = []
-    let users = base + "/Users"
+    let users = usersFolder ?? base + "/Users"
     // Listing the folder of homes names them without opening any.
     for name in (try? FileManager.default.contentsOfDirectory(atPath: users)) ?? [] {
         for folder in privateHomeFolders { privatePaths.insert("\(users)/\(name)/\(folder)") }
@@ -209,16 +235,20 @@ func scanFolders(
     var top: [Entry] = []
     var ancestors = [Entry?](repeating: nil, count: depth + 1)
     var counted = Set<UInt64>()  // hard-linked files already counted, by inode
+    var rootBytes: Int64 = 0
+    var rootPartial = false
 
     var argv: [UnsafeMutablePointer<CChar>?] = [strdup(rootPath), nil]
     defer { free(argv[0]) }
-    guard let fts = fts_open(&argv, FTS_PHYSICAL | FTS_XDEV | FTS_NOCHDIR, nil) else { return [] }
+    guard let fts = fts_open(&argv, FTS_PHYSICAL | FTS_XDEV | FTS_NOCHDIR, nil) else { return ([], 0, false) }
     defer { fts_close(fts) }
 
     func add(_ bytes: Int64, through level: Int) {
+        rootBytes += bytes
         for k in stride(from: 1, through: min(level, depth), by: 1) { ancestors[k]?.bytes += bytes }
     }
     func markAncestorsPartial(below level: Int) {
+        if level >= 1 { rootPartial = true }
         for k in stride(from: 1, to: min(level, depth + 1), by: 1) { ancestors[k]?.partial = true }
     }
 
@@ -268,10 +298,15 @@ func scanFolders(
             entry.bytes >= minimumBytes || entry.note == "private"
                 || (entry.note != nil && (entry.path ?? "").hasPrefix(users + "/"))
         }
-        .sorted { ($0.bytes, $1.title) > ($1.bytes, $0.title) }
+        .sorted(by: isLarger)
         .map { entry in entry.children = keep(entry.children); return entry }
     }
-    return keep(top)
+    return (keep(top), rootBytes, rootPartial)
+}
+
+/// The order of rows in a list: bytes descending, then title.
+func isLarger(_ a: Entry, _ b: Entry) -> Bool {
+    (a.bytes, b.title) > (b.bytes, a.title)
 }
 
 func formatSize(_ bytes: Int64) -> String {
@@ -280,6 +315,12 @@ func formatSize(_ bytes: Int64) -> String {
         : bytes >= 1_000_000_000
         ? String(format: "%.1f GB", Double(bytes) / 1_000_000_000)
         : String(format: "%.0f MB", Double(bytes) / 1_000_000)
+}
+
+/// The folder list as it is kept between runs.
+struct SavedMeasurement: Codable {
+    let measuredAt: Date
+    let folders: [Entry]
 }
 
 // MARK: - The panel
@@ -474,11 +515,6 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     // The last measurement is kept in the app's cache folder, so a restart (a login,
     // an update) opens with it instead of measuring from nothing.
-    private struct SavedMeasurement: Codable {
-        let measuredAt: Date
-        let folders: [Entry]
-    }
-
     private static let savedMeasurementURL: URL? = FileManager.default
         .urls(for: .cachesDirectory, in: .userDomainMask).first?
         .appendingPathComponent("sh.csarko.MacStats/folders.json")
@@ -576,17 +612,28 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
 
 // MARK: - Command line
 
+func printTree(_ entries: [Entry], indent: Int) {
+    for entry in entries {
+        print(String(repeating: "  ", count: indent) + entry.title + "\t" + entry.sizeText)
+        printTree(entry.children, indent: indent + 1)
+    }
+}
+
 // Prints what the panel lists, as an indented tree. With a folder, prints only
 // that folder's tree, which keeps tests fast.
-func diskReport(folder: String?, minimumBytes: Int64, granted: GrantSet = GrantSet()) -> Int32 {
-    func printTree(_ entries: [Entry], indent: Int) {
-        for entry in entries {
-            print(String(repeating: "  ", count: indent) + entry.title + "\t" + entry.sizeText)
-            printTree(entry.children, indent: indent + 1)
+func diskReport(folder: String?, minimumBytes: Int64, granted: GrantSet = GrantSet(), thenGrant: String? = nil) -> Int32 {
+    /// Scans, then measures `thenGrant` on its own and splices it in, as the Grant button does.
+    func scanned(_ root: String) -> [Entry] {
+        let tree = scanFolders(root, minimumBytes: minimumBytes, granted: granted)
+        if let thenGrant {
+            var opened = granted
+            opened.folders.insert(canonicalPath(thenGrant))
+            grant(thenGrant, in: tree, minimumBytes: minimumBytes, granted: opened)
         }
+        return tree
     }
     if let folder {
-        printTree(scanFolders(folder, minimumBytes: minimumBytes, granted: granted), indent: 0)
+        printTree(scanned(folder), indent: 0)
         return 0
     }
     let spaces = volumeSpaces()
@@ -597,7 +644,7 @@ func diskReport(folder: String?, minimumBytes: Int64, granted: GrantSet = GrantS
     for space in spaces {
         print(space.title + "\t" + formatSize(space.bytes))
     }
-    printTree(scanFolders(dataVolume, minimumBytes: minimumBytes, granted: granted), indent: 1)
+    printTree(scanned(dataVolume), indent: 1)
     return 0
 }
 

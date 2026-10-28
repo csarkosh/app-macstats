@@ -29,15 +29,20 @@ struct Run {
 
 /// Runs a program; `ok` means a non-zero exit fails the test.
 @discardableResult
-func run(_ path: String, _ arguments: [String], ok: Bool = true, timeout: TimeInterval = 120) throws -> Run {
+func run(_ path: String, _ arguments: [String], ok: Bool = true, timeout: TimeInterval = 120, stdin: String? = nil) throws -> Run {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: path)
     process.arguments = arguments
     let out = Pipe(), err = Pipe()
     process.standardOutput = out
     process.standardError = err
-    process.standardInput = FileHandle.nullDevice
+    let input = Pipe()
+    process.standardInput = stdin == nil ? FileHandle.nullDevice : input
     try process.run()
+    if let stdin {
+        input.fileHandleForWriting.write(Data(stdin.utf8))
+        try input.fileHandleForWriting.close()  // so the program sees the end of its input
+    }
     let deadline = DispatchWorkItem { process.terminate() }
     DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
     let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
@@ -51,8 +56,8 @@ func run(_ path: String, _ arguments: [String], ok: Bool = true, timeout: TimeIn
     return result
 }
 
-func macStats(_ arguments: String..., ok: Bool = true, timeout: TimeInterval = 120) throws -> Run {
-    try run(macstats, arguments, ok: ok, timeout: timeout)
+func macStats(_ arguments: String..., ok: Bool = true, timeout: TimeInterval = 120, stdin: String? = nil) throws -> Run {
+    try run(macstats, arguments, ok: ok, timeout: timeout, stdin: stdin)
 }
 
 func macStats(_ arguments: [String]) throws -> Run { try run(macstats, arguments) }
@@ -464,6 +469,39 @@ test("counts a granted private folder and still skips the others") {
     let lines = try macStats("--report", dir.path, "--min-mb", "1", "--granted", dir.path + "/Users/alice/Documents").lines
         .map { $0.replacingOccurrences(of: "\t", with: " | ") }
     checkEqual(lines, ["Users | ≥ 5 MB", "  alice | ≥ 5 MB", "    Documents | 4 MB", "    Code | 1 MB", "    Downloads | private"], "the rows")
+}
+
+test("grants one folder: its size appears and reaches its parents") {
+    let dir = try tempDir("splice")
+    try writeTree(dir, [("Users/alice/Documents/a.bin", 4), ("Users/alice/Downloads/b.bin", 2), ("Users/alice/Code/c.bin", 1)])
+    let lines = try macStats("--report", dir.path, "--min-mb", "1", "--then-grant", dir.path + "/Users/alice/Documents").lines
+        .map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(lines, ["Users | ≥ 5 MB", "  alice | ≥ 5 MB", "    Documents | 4 MB", "    Code | 1 MB", "    Downloads | private"], "the rows")
+}
+
+test("clears ≥ only when nothing unmeasured is left") {
+    let dir = try tempDir("splice-clear")
+    try writeTree(dir, [("Users/alice/Documents/a.bin", 4), ("Users/alice/Code/c.bin", 1)])
+    let lines = try macStats("--report", dir.path, "--min-mb", "1", "--then-grant", dir.path + "/Users/alice/Documents").lines
+        .map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(lines, ["Users | 5 MB", "  alice | 5 MB", "    Documents | 4 MB", "    Code | 1 MB"], "no ≥ remains")
+}
+
+test("shows a refused folder as no access") {
+    let dir = try tempDir("refused")
+    try writeTree(dir, [("Users/alice/Documents/a.bin", 4), ("Users/alice/Code/c.bin", 1)])
+    let documents = dir.path + "/Users/alice/Documents"
+    chmod(documents, 0)
+    defer { chmod(documents, 0o755) }
+    let lines = try macStats("--report", dir.path, "--min-mb", "1", "--then-grant", documents).lines
+        .map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(lines, ["Users | ≥ 1 MB", "  alice | ≥ 1 MB", "    Code | 1 MB", "    Documents | no access"], "the rows")
+}
+
+test("reads a saved measurement without the new keys") {
+    // 5000000 bytes: the brief's 5 would print as 0 MB.
+    let json = #"{"measuredAt":0,"folders":[{"title":"Users","bytes":5000000,"partial":false,"children":[]}]}"#
+    checkEqual(try macStats("--read-measurement", "-", stdin: json).lines, ["Users\t5 MB"], "decodes the old shape")
 }
 
 test("lists no Volumes row") {

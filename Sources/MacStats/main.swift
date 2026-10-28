@@ -26,7 +26,8 @@
 //   MacStats --spaces                       # prints the disk's five volume spaces
 //   MacStats --volumes                      # prints each external disk: name, used, total, mount point, state
 //   MacStats --legend                     # prints the Disk panel's Spaces rows, in order
-//   MacStats --report [folder] [--min-mb N] [--granted <path>]…  # prints the Disk panel's folders, opening the granted ones
+//   MacStats --report [folder] [--min-mb N] [--granted <path>]… [--then-grant <path>]  # prints the Disk panel's folders, opening the granted ones; --then-grant measures that folder alone afterwards and splices it in
+//   MacStats --read-measurement <file|->    # prints the folders of a saved measurement (- reads standard input)
 //   MacStats --grantable <path>             # prints dialog, none or "not private": whether a private row gets Grant
 
 import Cocoa
@@ -272,7 +273,17 @@ if arguments.contains("--report") {
     for (index, flag) in arguments.enumerated() where flag == "--granted" && index + 1 < arguments.count {
         granted.folders.insert(canonicalPath(arguments[index + 1]))
     }
-    exit(diskReport(folder: argument(after: "--report"), minimumBytes: minimumBytes, granted: granted))
+    exit(diskReport(folder: argument(after: "--report"), minimumBytes: minimumBytes, granted: granted,
+                    thenGrant: argument(after: "--then-grant")))
+}
+if let source = argument(after: "--read-measurement") {
+    let data = source == "-" ? FileHandle.standardInput.readDataToEndOfFile() : FileManager.default.contents(atPath: source)
+    guard let data, let saved = try? JSONDecoder().decode(SavedMeasurement.self, from: data) else {
+        FileHandle.standardError.write("Could not read a saved measurement from \(source).\n".data(using: .utf8)!)
+        exit(1)
+    }
+    printTree(saved.folders, indent: 0)
+    exit(0)
 }
 
 let app = NSApplication.shared
