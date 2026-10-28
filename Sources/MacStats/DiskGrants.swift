@@ -1,6 +1,6 @@
 // Which private folders in the Disk panel can be opened with a Grant button, and the set
 // of folders the scan may open. The rules look at the path only, so deciding never causes
-// a macOS privacy prompt; only `grant`, run on a Grant click, opens a private folder.
+// a macOS privacy prompt; only `measureGranted`, run on a Grant click, opens a private folder.
 
 import AppKit
 import Security
@@ -59,22 +59,36 @@ func grantKind(for path: String, users: String = "/Users") -> GrantKind {
 
 enum GrantOutcome { case measured, refused, unchanged }
 
-/// Measures `path` on its own, to the depth left under it, and splices the result into
-/// `folders` in place: the entry loses its note and gains bytes and children, every ancestor
-/// grows by the same bytes, and each ancestor's `partial` is recomputed from what is still
-/// unmeasured below it (a listed note, or a small folder the scan dropped with something
-/// unmeasured inside). A root macOS refuses to open (EACCES or EPERM) leaves the entry as
-/// `no access`, `refused`, and returns `.refused`. A path that is not in the tree, or that
-/// cannot be opened for another reason (it is gone, say), changes nothing and returns
-/// `.unchanged`. The top level of `folders` keeps its order: a caller that wants it sorted
-/// again sorts with `isLarger`.
-@discardableResult
-func grant(
-    _ path: String, in folders: [Entry], depth: Int = folderDepth, minimumBytes: Int64 = defaultMinimumBytes,
-    granted: GrantSet
-) -> GrantOutcome {
+/// What measuring one granted folder found, before it is spliced into the tree.
+enum GrantMeasurement {
+    case measured(bytes: Int64, partial: Bool, droppedUnmeasured: Bool, children: [Entry])
+    /// macOS would not let the folder be opened (EACCES or EPERM).
+    case refused
+    /// The folder could not be opened for another reason (it is gone, say), or is not listed.
+    case unchanged
+
+    /// Whether the folder opened and was measured.
+    var opened: Bool {
+        if case .measured = self { return true }
+        return false
+    }
+}
+
+/// Where a listed folder is measured from. It is read from the tree by whoever owns the
+/// tree, so the measuring itself never touches a listed entry.
+struct GrantTarget {
+    /// The tree's own spelling of the path, the one the scan walks, so its children match
+    /// `keep()`'s rules.
+    let path: String
+    /// The levels left under the folder.
+    let depth: Int
+    /// The folder of homes, from the top of the tree.
+    let users: String?
+}
+
+/// The listed entries from the top level down to the one at `path`, in either spelling.
+func grantChain(_ path: String, in folders: [Entry]) -> [Entry]? {
     let wanted = canonicalPath(path)
-    /// The entries from the top level down to the one at `wanted`.
     func chain(_ entries: [Entry]) -> [Entry]? {
         for entry in entries {
             if let entryPath = entry.path, canonicalPath(entryPath) == wanted { return [entry] }
@@ -82,36 +96,73 @@ func grant(
         }
         return nil
     }
-    guard let found = chain(folders), let entry = found.last else { return .unchanged }
+    return chain(folders)
+}
 
-    // macOS answers a refused folder with "not permitted" when it is opened.
-    // The tree's own spelling is the one the scan walks, so its children match `keep()`'s rules.
-    let walked = entry.path ?? path
-    guard let handle = opendir(walked) else {
-        guard errno == EACCES || errno == EPERM else { return .unchanged }
+/// What `measureGranted` needs to measure the folder listed at `path`; nil when it is not listed.
+func grantTarget(_ path: String, in folders: [Entry], depth: Int = folderDepth) -> GrantTarget? {
+    guard let chain = grantChain(path, in: folders), let entry = chain.last else { return nil }
+    return GrantTarget(path: entry.path ?? path, depth: depth - chain.count,
+                       users: folders.first { $0.title == "Users" }?.path)
+}
+
+/// Measures one folder on its own, to the depth left under it. It reads no listed entry, so it
+/// can run off the main thread while the tree is on screen. macOS answers a refused folder
+/// with "not permitted" when it is opened.
+func measureGranted(_ target: GrantTarget, minimumBytes: Int64 = defaultMinimumBytes, granted: GrantSet) -> GrantMeasurement {
+    guard let handle = opendir(target.path) else { return errno == EACCES || errno == EPERM ? .refused : .unchanged }
+    closedir(handle)
+    let scan = scanTree(target.path, depth: target.depth, minimumBytes: minimumBytes, granted: granted, users: target.users)
+    return .measured(bytes: scan.bytes, partial: scan.partial, droppedUnmeasured: scan.droppedUnmeasured, children: scan.folders)
+}
+
+/// Splices a measurement into `folders` in place, at the entry listed at `path`, but only while
+/// that entry is still unmeasured (it has a note). A measured folder loses its note and gains
+/// bytes and children. Every ancestor grows by the same bytes, and each ancestor's `partial` is
+/// recomputed from what is still unmeasured below it (a listed note, or a small folder the scan
+/// dropped with something unmeasured inside). A refusal leaves the entry `no access` and
+/// `refused`. Anything else (not listed, already measured, `.unchanged`) changes nothing and
+/// returns `.unchanged`. The top level of `folders` keeps its order: a caller that wants it
+/// sorted again sorts with `isLarger`.
+@discardableResult
+func splice(_ measurement: GrantMeasurement, at path: String, in folders: [Entry]) -> GrantOutcome {
+    guard let chain = grantChain(path, in: folders), let entry = chain.last, entry.note != nil else { return .unchanged }
+    switch measurement {
+    case .unchanged:
+        return .unchanged
+    case .refused:
         entry.note = "no access"
         entry.refused = true
         return .refused
-    }
-    closedir(handle)
+    case let .measured(bytes, partial, droppedUnmeasured, children):
+        let added = bytes - entry.bytes
+        entry.note = nil
+        entry.refused = false
+        entry.bytes = bytes
+        entry.partial = partial
+        entry.droppedUnmeasured = droppedUnmeasured
+        entry.children = children
 
-    let users = folders.first { $0.title == "Users" }?.path
-    let scan = scanTree(walked, depth: depth - found.count, minimumBytes: minimumBytes, granted: granted, users: users)
-    let added = scan.bytes - entry.bytes
-    entry.note = nil
-    entry.refused = false
-    entry.bytes = scan.bytes
-    entry.partial = scan.partial
-    entry.droppedUnmeasured = scan.droppedUnmeasured
-    entry.children = scan.folders
-
-    // From the entry's parent up: grow, re-sort the children, and recompute the minimum mark.
-    for ancestor in found.dropLast().reversed() {
-        ancestor.bytes += added
-        ancestor.children.sort(by: isLarger)
-        ancestor.partial = hasUnmeasured(ancestor) || ancestor.droppedUnmeasured || ancestor.children.contains { $0.partial }
+        // From the entry's parent up: grow, re-sort the children, and recompute the minimum mark.
+        for ancestor in chain.dropLast().reversed() {
+            ancestor.bytes += added
+            ancestor.children.sort(by: isLarger)
+            ancestor.partial = hasUnmeasured(ancestor) || ancestor.droppedUnmeasured || ancestor.children.contains { $0.partial }
+        }
+        return .measured
     }
-    return .measured
+}
+
+/// Measures `path` on its own and splices the result into `folders` in place, in one go:
+/// `measureGranted`, then `splice`. The command line uses it; the panel runs the two steps on
+/// different threads.
+@discardableResult
+func grant(
+    _ path: String, in folders: [Entry], depth: Int = folderDepth, minimumBytes: Int64 = defaultMinimumBytes,
+    granted: GrantSet
+) -> GrantOutcome {
+    guard let target = grantTarget(path, in: folders, depth: depth) else { return .unchanged }
+    return splice(measureGranted(target, minimumBytes: minimumBytes, granted: granted), at: path, in: folders)
 }
 
 /// True when the entry or anything below it has a note (private or no access).

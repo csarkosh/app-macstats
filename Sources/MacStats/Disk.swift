@@ -368,8 +368,6 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     private var granted = GrantSet()
     /// The folders being measured after a Grant click, as canonical paths; their rows spin.
     private var granting: Set<String> = []
-    /// Counts the lists shown, so a folder measured into one list is not shown in a newer one.
-    private var listsShown = 0
 
     init() {
         super.init(title: "Disk")
@@ -536,10 +534,19 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
                 // A granted folder it could not open offers System Settings, and its grant is dropped.
                 for path in refusedGrants(measured, granted: granted) { self.grants.remove(folder: path) }
                 self.granted = self.grants.load()
+                // A folder granted while this measurement ran is not in it. One clicked from a
+                // refused row waits, still refused, for Measure again once it is allowed in
+                // System Settings; any other is measured into the new list.
+                let grantedSince = self.granted.folders.subtracting(granted.folders)
+                let waiting = grantedSince.filter { grantChain($0, in: self.folders)?.last?.refused == true }
+                for path in waiting {
+                    guard let entry = grantChain(path, in: measured)?.last, entry.note != nil else { continue }
+                    entry.note = "no access"
+                    entry.refused = true
+                }
                 self.show(measured, at: Date())
                 self.saveMeasurement()
-                // A folder granted while this measurement ran is not in it: measure it into it.
-                for folder in self.granted.folders.subtracting(granted.folders) { self.measureGrant(folder) }
+                for path in grantedSince.subtracting(waiting) { self.measureGrant(path) }
             }
         }
     }
@@ -547,7 +554,6 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     func show(_ measured: [Entry], at time: Date) {
         folders = measured
         measuredAt = time
-        listsShown += 1
         endHover()
         outline.reloadData()
         expandBiggestBranch()
@@ -705,57 +711,51 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         measureGrant(path)
     }
 
-    /// Measures a granted folder on its own, off the main thread, its row spinning meanwhile,
-    /// and splices it into the list. The work runs on a copy of the list, so no row changes
-    /// while the outline reads it; the copy is shown only if no full measurement replaced the
-    /// list meanwhile, and otherwise the folder is measured again into the newer list if it is
-    /// still private there. If the panel closes first, the result shows when it next opens.
+    /// Measures a granted folder on its own, off the main thread, its row spinning meanwhile.
+    /// The background step only measures and touches no listed entry. The splice runs back on
+    /// the main thread, into whatever list is shown by then, and only while the folder is still
+    /// unmeasured there, so two grants in flight, or a full measurement that lands meanwhile,
+    /// never undo each other. If the panel closes first, the result shows when it next opens.
     private func measureGrant(_ path: String) {
         let key = canonicalPath(path)
-        guard !granting.contains(key), let entry = listedEntry(at: key), entry.note == "private",
-              let data = try? JSONEncoder().encode(folders),
-              let copy = try? JSONDecoder().decode([Entry].self, from: data) else { return }
+        guard !granting.contains(key), let entry = grantChain(key, in: folders)?.last, entry.note == "private",
+              let target = grantTarget(key, in: folders) else { return }
         granting.insert(key)
         sizeCell(at: outline.row(forItem: entry))?.measuring = true
-        let list = listsShown
         let granted = granted
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let outcome = grant(path, in: copy, granted: granted)
+            let measurement = measureGranted(target, granted: granted)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.granting.remove(key)
-                // A refusal shows as no access; a folder that is gone shows nothing new.
-                if outcome != .measured {
-                    self.grants.remove(folder: path)
+                // A refusal, or a folder that is gone, keeps no grant.
+                if !measurement.opened {
+                    self.grants.remove(folder: key)
                     self.granted = self.grants.load()
                 }
-                if self.listsShown == list {
-                    if outcome != .unchanged { self.folders = copy }
-                } else if outcome == .measured {
-                    self.measureGrant(path)
-                    if self.granting.contains(key) { return }  // still spinning
-                }
-                self.folders.sort(by: isLarger)
-                self.endHover()
-                self.outline.reloadData()
-                self.expandBiggestBranch()
+                splice(measurement, at: key, in: self.folders)
+                self.showSplice(at: key)
                 self.saveMeasurement()
                 self.fitToContents()
             }
         }
     }
 
-    /// The listed folder at `path`, in either spelling.
-    private func listedEntry(at path: String) -> Entry? {
-        let wanted = canonicalPath(path)
-        func find(_ entries: [Entry]) -> Entry? {
-            for entry in entries {
-                if let entryPath = entry.path, canonicalPath(entryPath) == wanted { return entry }
-                if let found = find(entry.children) { return found }
-            }
-            return nil
+    /// Shows a splice at `path`: its row and the rows above it are reloaded, so open branches
+    /// and the hover stay. Only when the top level's order changes is the whole list reloaded,
+    /// with the biggest branch opened as after a measurement.
+    private func showSplice(at path: String) {
+        let order = folders.map(ObjectIdentifier.init)
+        folders.sort(by: isLarger)
+        guard folders.map(ObjectIdentifier.init) == order else {
+            endHover()
+            outline.reloadData()
+            expandBiggestBranch()
+            return
         }
-        return find(folders)
+        // Each ancestor's children were re-sorted, so each reloads with its children.
+        for item in (grantChain(path, in: folders) ?? []).reversed() { outline.reloadItem(item, reloadChildren: true) }
+        rowsMoved()
     }
 
     // The tracking area on the outline sends its events to the panel; other entered and
