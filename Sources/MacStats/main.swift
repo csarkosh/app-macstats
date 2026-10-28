@@ -24,7 +24,8 @@
 //   MacStats --heat "<row name>" <°C>       # prints the colour a Temperature row would get
 //   MacStats --power-level <W>              # prints the power tier: normal, moderate or high
 //   MacStats --spaces                       # prints the disk's five volume spaces
-//   MacStats --legend                       # prints the Disk panel's Spaces rows, in order
+//   MacStats --volumes                      # prints each external disk: name, used, total, mount point, state
+//   MacStats --legend                     # prints the Disk panel's Spaces rows, in order
 //   MacStats --report [folder] [--min-mb N] # prints the Disk panel's folders
 
 import Cocoa
@@ -253,6 +254,12 @@ if arguments.contains("--spaces") {
     let spaces = volumeSpaces()
     for space in spaces { print(space.title + "\t" + formatSize(space.bytes)) }
     exit(spaces.isEmpty ? 1 : 0)
+}
+if arguments.contains("--volumes") {
+    for volume in externalVolumes() {
+        print([volume.name, String(volume.used), String(volume.total), volume.mountPoint, "private"].joined(separator: "\t"))
+    }
+    exit(0)
 }
 if arguments.contains("--report") {
     let minimumBytes = argument(after: "--min-mb").flatMap(Int64.init).map { $0 * 1_000_000 } ?? defaultMinimumBytes

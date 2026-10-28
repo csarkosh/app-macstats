@@ -388,6 +388,18 @@ test("lists the disk's five spaces in order") {
                ["macOS system", "update/boot", "recovery", "swap", "my apps / files"], "the five spaces")
 }
 
+test("lists external volumes with their used and total bytes") {
+    let rows = try macStats("--volumes").lines.filter { !$0.isEmpty }.map { $0.components(separatedBy: "\t") }
+    for row in rows {
+        checkEqual(row.count, 5, "name, used, total, mount point, state: \(row)")
+        let used = Int64(row[1]) ?? -1, total = Int64(row[2]) ?? -1
+        check(used >= 0 && total > 0 && used <= total, "\(row[0]) used \(used) of \(total)")
+        check(FileManager.default.fileExists(atPath: row[3]), "\(row[3]) is mounted")
+        check(["granted", "private", "no access"].contains(row[4]), "a known state, got \(row[4])")
+    }
+    // With no external disk the flag prints nothing; that is a pass too.
+}
+
 test("ships the menu bar items' order, CPU to Disk from the left") {
     let rows = try macStats("--item-positions").lines.map { $0.components(separatedBy: "\t") }
     checkEqual(rows.map { $0[0] }, ["MacStatsCPU", "MacStatsGPU", "MacStatsRAM", "MacStatsTemp", "MacStatsDisk"], "the names")

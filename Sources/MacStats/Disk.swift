@@ -265,7 +265,9 @@ func scanFolders(_ root: String, depth: Int = folderDepth, minimumBytes: Int64 =
 }
 
 func formatSize(_ bytes: Int64) -> String {
-    bytes >= 1_000_000_000
+    bytes >= 1_000_000_000_000
+        ? String(format: "%.1f TB", Double(bytes) / 1_000_000_000_000)
+        : bytes >= 1_000_000_000
         ? String(format: "%.1f GB", Double(bytes) / 1_000_000_000)
         : String(format: "%.0f MB", Double(bytes) / 1_000_000)
 }
