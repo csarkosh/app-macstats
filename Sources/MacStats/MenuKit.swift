@@ -575,6 +575,8 @@ class StatsPanel: NSWindow, NSWindowDelegate {
     /// Watches clicks in other apps while the panel is open, to close it on one. Mouse
     /// clicks need no permission to watch (only keystrokes would).
     private var outsideClicks: Any?
+    /// The screen the panel is about to open on, known before it moves there.
+    private(set) var openingScreen: NSScreen?
     private var dismissedAt = Date.distantPast
 
     func windowDidResignKey(_ notification: Notification) {
@@ -604,11 +606,14 @@ class StatsPanel: NSWindow, NSWindowDelegate {
             return
         }
         StatsPanel.openPanel?.dismiss()
+        let screen = button.window?.screen ?? NSScreen.main
+        // The fit happens before the move, so it must know which screen the panel will be on.
+        openingScreen = screen
         willOpen()
         fitToContents()
         if let anchor = button.window?.frame {
             var x = anchor.midX - frame.width / 2
-            if let screen = button.window?.screen ?? NSScreen.main {
+            if let screen {
                 x = min(max(x, screen.frame.minX + 3), screen.frame.maxX - frame.width - 3)
             }
             setFrameOrigin(NSPoint(x: x, y: anchor.minY - frame.height - 3))
@@ -627,7 +632,7 @@ class StatsPanel: NSWindow, NSWindowDelegate {
     /// The tallest the panel may be: its screen's usable height (below the menu bar, above the
     /// Dock) less a margin. Before the panel has a screen it is the main screen's.
     func maximumHeight() -> CGFloat {
-        guard let screen = screen ?? NSScreen.main else { return 800 }
+        guard let screen = openingScreen ?? screen ?? NSScreen.main else { return 800 }
         return screen.visibleFrame.height - 6
     }
 
