@@ -25,10 +25,10 @@
 //   MacStats --power-level <W>              # prints the power tier: normal, moderate or high
 //   MacStats --spaces                       # prints the disk's five volume spaces
 //   MacStats --volumes                      # prints each external disk: name, used, total, mount point, state
-//   MacStats --grants [--defaults-suite <name>] [--as-build <id>] [--add-folder <path>] [--set-removable true|false]  # prints the build and the remembered grants, after any writes
-//   MacStats --legend                   # prints the Disk panel's Spaces rows, in order
-//   MacStats --report [folder] [--min-mb N] [--granted <path>]… [--then-grant <path>]  # prints the Disk panel's folders, opening the granted ones; --then-grant measures that folder alone afterwards and splices it in; with no folder, ends with each external disk's used space
-//   MacStats --read-measurement <file|-> [--granted <path>]…  # prints the folders of a saved measurement as the panel shows it (- reads standard input)
+//   MacStats --grants [--defaults-suite <name>] [--as-build <id>] [--add-folder <path>] [--add-volume <uuid>]  # prints the build and the remembered grants, after any writes (MACSTATS_DEFAULTS_SUITE names the suite too)
+//   MacStats --legend                       # prints the Disk panel's Spaces rows, in order
+//   MacStats --report [folder] [--min-mb N] [--granted <path>]… [--snapshot <path>=<name>,…]… [--then-grant <path>]  # prints the Disk panel's folders, opening the granted ones (inside a snapshot's folder, only the names given); --then-grant measures that folder alone afterwards and splices it in; with no folder, ends with each external disk's used space
+//   MacStats --read-measurement <file|-> [--granted <path>]… [--json]  # prints the folders of a saved measurement as the panel shows it (- reads standard input; --json prints it saved again)
 //   MacStats --item-positions               # prints each menu bar item's saved position (the registered defaults give the order)
 //   MacStats --grantable <path>             # prints dialog, none or "not private": whether a private row gets Grant
 
@@ -187,7 +187,11 @@ func tooltipsReport() -> Int32 {
     desktop.refused = true
     let mail = Entry(title: "Mail", path: home + "/Library/Mail")
     mail.note = "private"
-    disk.show([measured, downloads, desktop, mail], at: Date())
+    // A granted Music in which a folder made since the click was left out.
+    let music = Entry(title: "Music", path: home + "/Music", bytes: 2_000_000_000)
+    music.partial = true
+    music.leftOut = true
+    disk.show([measured, music, downloads, desktop, mail], at: Date())
     // And made-up external disks' sections, so their tooltips are listed without one attached:
     // one not granted yet and one macOS refused.
     disk.showSampleVolumes([
@@ -283,45 +287,59 @@ if arguments.contains("--spaces") {
     exit(spaces.isEmpty ? 1 : 0)
 }
 if arguments.contains("--volumes") {
-    // Reads defaults and the app's own cache files only; no volume is opened.
+    // Reads the mount list, defaults and the app's own cache files only; no volume is opened.
     let store = GrantStore()
     let granted = store.load()
     for volume in externalVolumes() {
-        let open = volume.isNetwork ? granted.networkVolumes : granted.removableVolumes
         let refused = loadSavedVolume(volume.uuid)?.isRefused(for: store.build) == true  // by this build
-        let state = refused ? "no access" : open ? "granted" : "private"
+        let state = granted.volumes.contains(volume.uuid) ? "granted" : refused ? "no access" : "private"
         print([volume.name, String(volume.used), String(volume.total), volume.mountPoint, state].joined(separator: "\t"))
     }
     exit(0)
 }
 if arguments.contains("--grants") {
     // Reads and writes defaults only; never opens a folder. The options are for the tests.
-    var store = GrantStore()
-    if let name = argument(after: "--defaults-suite") {
-        // A suite that will not open stops here, so a typo never writes the real grants.
+    // Without --defaults-suite, the suite is MACSTATS_DEFAULTS_SUITE's, or else the app's own.
+    // (Made in a function: made in top-level code, the release build crashed reading the suite.)
+    func grantsFlagStore() -> GrantStore {
+        let build = argument(after: "--as-build") ?? GrantStore.buildIdentity()
+        guard arguments.contains("--defaults-suite") else { return GrantStore(build: build) }
+        // A missing name, or a suite that will not open, stops here, so a typo never writes
+        // the real grants.
+        guard let name = argument(after: "--defaults-suite") else { fail("usage: --defaults-suite <name>") }
         guard let defaults = UserDefaults(suiteName: name) else { fail("--defaults-suite: cannot open \(name)") }
-        store = GrantStore(defaults: defaults, build: argument(after: "--as-build") ?? store.build)
-    } else if let build = argument(after: "--as-build") {
-        store = GrantStore(build: build)
+        return GrantStore(defaults: defaults, build: build)
     }
+    let store = grantsFlagStore()
     if let folder = argument(after: "--add-folder") { store.add(folder: folder) }
-    if let value = argument(after: "--set-removable") { store.set(removableVolumes: value == "true") }
+    if let uuid = argument(after: "--add-volume") { store.add(volume: uuid) }
     let granted = store.load()
     print("build\t" + store.build)
     for folder in granted.folders.sorted() { print("folder\t" + folder) }
-    print("removable\t\(granted.removableVolumes)")
-    print("network\t\(granted.networkVolumes)")
+    for uuid in granted.volumes.sorted() { print("volume\t" + uuid) }
+    for (folder, names) in granted.snapshots.sorted(by: { $0.key < $1.key }) {
+        print("snapshot\t" + folder + "\t" + names.joined(separator: ","))
+    }
+    for folder in granted.refused.sorted() { print("refused\t" + folder) }
     exit(0)
 }
 if let path = argument(after: "--grantable") {
     print(grantKind(for: path).rawValue)  // string rules only: never opens the path
     exit(0)
 }
-/// The value after each --granted, as a canonical path.
+/// The value after each --granted, as a canonical path, and each --snapshot's
+/// `<path>=<name>,<name>` (nothing after `=` names no folder). The flags never read the
+/// remembered grants: a binary started from a terminal would open them for the terminal.
 func grantedArguments() -> GrantSet {
     var granted = GrantSet()
-    for (index, flag) in arguments.enumerated() where flag == "--granted" && index + 1 < arguments.count {
-        granted.folders.insert(canonicalPath(arguments[index + 1]))
+    for (index, flag) in arguments.enumerated() where index + 1 < arguments.count {
+        let value = arguments[index + 1]
+        if flag == "--granted" { granted.folders.insert(canonicalPath(value)) }
+        if flag == "--snapshot" {
+            guard let equals = value.lastIndex(of: "=") else { fail("usage: --snapshot <path>=<name>,<name>…") }
+            let names = value[value.index(after: equals)...].split(separator: ",").map(String.init)
+            granted.snapshots[canonicalPath(String(value[..<equals]))] = names
+        }
     }
     return granted
 }
@@ -336,9 +354,19 @@ if let source = argument(after: "--read-measurement") {
         FileHandle.standardError.write("Could not read a saved measurement from \(source).\n".data(using: .utf8)!)
         exit(1)
     }
-    // As the panel shows it at launch: a grantable folder not in --granted is private again.
-    closeUngranted(saved.folders, granted: grantedArguments())
-    printTree(saved.folders.sorted(by: isLarger), indent: 0)
+    // As the panel shows it at launch: a 1.0.0 Volumes row is left out, and a grantable folder
+    // not in --granted is private again.
+    let folders = droppingVolumesRow(saved.folders)
+    closeUngranted(folders, granted: grantedArguments())
+    if arguments.contains("--json") {
+        // Saved again as the panel saves it, so a test can see every key survive the trip.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let json = try? encoder.encode(SavedMeasurement(measuredAt: saved.measuredAt, folders: folders)) else { exit(1) }
+        print(String(decoding: json, as: UTF8.self))
+        exit(0)
+    }
+    printTree(folders.sorted(by: isLarger), indent: 0)
     exit(0)
 }
 

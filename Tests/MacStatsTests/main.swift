@@ -27,12 +27,17 @@ struct Run {
     var lines: [String] { stdout.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n") }
 }
 
-/// Runs a program; `ok` means a non-zero exit fails the test.
+/// Runs a program; `ok` means a non-zero exit fails the test. `env` adds to (or replaces in)
+/// this program's environment.
 @discardableResult
-func run(_ path: String, _ arguments: [String], ok: Bool = true, timeout: TimeInterval = 120, stdin: String? = nil) throws -> Run {
+func run(
+    _ path: String, _ arguments: [String], ok: Bool = true, timeout: TimeInterval = 120, stdin: String? = nil,
+    env: [String: String] = [:]
+) throws -> Run {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: path)
     process.arguments = arguments
+    if !env.isEmpty { process.environment = ProcessInfo.processInfo.environment.merging(env) { $1 } }
     let out = Pipe(), err = Pipe()
     process.standardOutput = out
     process.standardError = err
@@ -56,8 +61,10 @@ func run(_ path: String, _ arguments: [String], ok: Bool = true, timeout: TimeIn
     return result
 }
 
-func macStats(_ arguments: String..., ok: Bool = true, timeout: TimeInterval = 120, stdin: String? = nil) throws -> Run {
-    try run(macstats, arguments, ok: ok, timeout: timeout, stdin: stdin)
+func macStats(
+    _ arguments: String..., ok: Bool = true, timeout: TimeInterval = 120, stdin: String? = nil, env: [String: String] = [:]
+) throws -> Run {
+    try run(macstats, arguments, ok: ok, timeout: timeout, stdin: stdin, env: env)
 }
 
 func macStats(_ arguments: [String]) throws -> Run { try run(macstats, arguments) }
@@ -244,6 +251,7 @@ test("explains every legend key with a tooltip, and keeps every tooltip to two l
     check(diskOther.contains { $0.hasPrefix("Opens this folder once") }, "the Grant button's tooltip")
     check(diskOther.contains { $0.hasPrefix("macOS has no dialog for this folder") }, "the no-button tooltip")
     check(diskOther.contains { $0.hasPrefix("Allowed in System Settings") }, "the refused folder's tooltip")
+    check(diskOther.contains { $0.hasPrefix("Opens what was added since") }, "the Grant button's tooltip on a media folder that left something out")
     for tip in tips where tip.count == 6 {
         let (panel, kind, name, lines, widest, text) = (tip[0], tip[1], tip[2], Int(tip[3]) ?? 0, Int(tip[4]) ?? 0, tip[5])
         if kind == "key" { check(text.count >= 20, "\(panel) › \(name) explains itself (\(text.debugDescription))") }
@@ -420,20 +428,47 @@ test("--report ends with a line per external volume") {
 }
 
 test("knows which build it is") {
-    let build = fields(try macStats("--grants").lines, "build")?.first ?? ""
-    check(matches(build, "^[0-9a-f]{40,}$") || build == "unsigned", "a cdhash or unsigned, got \(build)")
+    // Its designated requirement (`cdhash H"…"` here, built on this Mac), or unsigned.
+    let suite = "sh.csarko.MacStats.tests.\(UUID().uuidString.prefix(8))"
+    defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+    let build = fields(try macStats("--grants", "--defaults-suite", suite).lines, "build")?.first ?? ""
+    check(!build.isEmpty, "a requirement or unsigned, got nothing")
 }
 
 test("forgets grants made by another build") {
     let suite = "sh.csarko.MacStats.tests.\(UUID().uuidString.prefix(8))"
     defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-    _ = try macStats("--grants", "--defaults-suite", suite, "--as-build", "aaa", "--add-folder", "/Users/alice/Downloads", "--set-removable", "true")
+    _ = try macStats("--grants", "--defaults-suite", suite, "--as-build", "aaa", "--add-folder", "/Users/alice/Downloads",
+                     "--add-volume", "1234-ABCD")
     let same = try macStats("--grants", "--defaults-suite", suite, "--as-build", "aaa").lines
     checkEqual(fields(same, "folder")?.first, "/Users/alice/Downloads", "remembered in the same build")
-    checkEqual(fields(same, "removable")?.first, "true", "removable remembered")
+    checkEqual(fields(same, "volume")?.first, "1234-ABCD", "the disk remembered by its UUID")
     let other = try macStats("--grants", "--defaults-suite", suite, "--as-build", "bbb").lines
     check(fields(other, "folder") == nil, "a different build starts with no folder grants")
-    checkEqual(fields(other, "removable")?.first, "false", "nor volume grants")
+    check(fields(other, "volume") == nil, "nor disk grants")
+    let unsigned = try macStats("--grants", "--defaults-suite", suite, "--as-build", "unsigned", "--add-folder", "/Users/alice/Desktop").lines
+    check(fields(unsigned, "folder") == nil, "an unsigned build remembers nothing")
+    // A suite flag with no name stops, rather than writing the real grants.
+    let missing = try macStats("--grants", "--defaults-suite", "--add-folder", "/Users/alice/Desktop", ok: false)
+    checkEqual(missing.status, 2, "--defaults-suite without a name fails")
+}
+
+test("never opens a remembered grant from the command line") {
+    // A grant remembered under this very build, in a throwaway suite: the flags still treat
+    // the folder as private, since a binary started from a terminal would open it on the
+    // terminal's behalf.
+    let suite = "sh.csarko.MacStats.tests.\(UUID().uuidString.prefix(8))"
+    defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+    let env = ["MACSTATS_DEFAULTS_SUITE": suite]
+    let dir = try tempDir("remembered")
+    try writeTree(dir, [("Users/alice/Downloads/a.bin", 2), ("Users/alice/Code/c.bin", 1)])
+    let downloads = dir.path + "/Users/alice/Downloads"
+    let grants = try macStats("--grants", "--add-folder", downloads, env: env).lines
+    if fields(grants, "build")?.first != "unsigned" {
+        checkEqual(fields(grants, "folder")?.first, downloads, "the grant is remembered in the suite")
+    }
+    let lines = try macStats("--report", dir.path, "--min-mb", "1", env: env).lines.map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(lines, ["Users | ≥ 1 MB", "  alice | ≥ 1 MB", "    Code | 1 MB", "    Downloads | private"], "the rows")
 }
 
 test("ships the menu bar items' order, CPU to Disk from the left") {
@@ -535,6 +570,42 @@ test("shows a refused folder as no access") {
     let lines = try macStats("--report", dir.path, "--min-mb", "1", "--then-grant", documents).lines
         .map { $0.replacingOccurrences(of: "\t", with: " | ") }
     checkEqual(lines, ["Users | ≥ 1 MB", "  alice | ≥ 1 MB", "    Code | 1 MB", "    Documents | no access"], "the rows")
+}
+
+test("opens only what a granted Music held at the click") {
+    // `New` was made after the click (as the Music app makes `Music/Music` the first time it
+    // runs), so it was never asked about: left out, and Music's size is a minimum.
+    let dir = try tempDir("snapshot")
+    try writeTree(dir, [("Users/alice/Music/Old/a.bin", 2), ("Users/alice/Music/New/b.bin", 3)])
+    let music = dir.path + "/Users/alice/Music"
+    let lines = try macStats("--report", dir.path, "--min-mb", "1", "--granted", music, "--snapshot", music + "=Old").lines
+        .map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(lines, ["Users | ≥ 2 MB", "  alice | ≥ 2 MB", "    Music | ≥ 2 MB"], "the rows")
+    // Measured from Music itself, its folders are listed: only Old.
+    let inside = try macStats("--report", music, "--min-mb", "1", "--snapshot", music + "=Old").lines
+        .map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(inside, ["Old | 2 MB"], "only the folder named at the click")
+}
+
+test("keeps refused and droppedUnmeasured through a save, and leaves out a 1.0.0 Volumes row") {
+    let json = #"{"measuredAt":0,"folders":["#
+        + #"{"title":"Volumes","path":"/System/Volumes/Data/Volumes","bytes":7000000},"#
+        + #"{"title":"Users","path":"/Users","bytes":5000000,"partial":true,"droppedUnmeasured":true,"children":["#
+        + #"{"title":"alice","path":"/Users/alice","bytes":5000000,"partial":true,"children":["#
+        + #"{"title":"Downloads","path":"/Users/alice/Downloads","bytes":0,"note":"no access","refused":true}]}]}]}"#
+    let granted = ["--granted", "/Users/alice/Downloads"]
+    let lines = try run(macstats, ["--read-measurement", "-"] + granted, stdin: json).lines
+        .map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(lines, ["Users | ≥ 5 MB", "  alice | ≥ 5 MB", "    Downloads | no access"], "the rows")
+    let saved = try run(macstats, ["--read-measurement", "-", "--json"] + granted, stdin: json).stdout
+    let object = try JSONSerialization.jsonObject(with: Data(saved.utf8)) as? [String: Any]
+    let folders = object?["folders"] as? [[String: Any]] ?? []
+    checkEqual(folders.compactMap { $0["title"] as? String }, ["Users"], "the Volumes row is left out")
+    checkEqual(folders.first?["droppedUnmeasured"] as? Bool, true, "droppedUnmeasured survives")
+    let alice = (folders.first?["children"] as? [[String: Any]])?.first
+    let downloads = (alice?["children"] as? [[String: Any]])?.first
+    checkEqual(downloads?["refused"] as? Bool, true, "refused survives")
+    checkEqual(downloads?["note"] as? String, "no access", "the note survives")
 }
 
 test("reads a saved measurement without the new keys") {

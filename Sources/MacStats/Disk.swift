@@ -1,9 +1,10 @@
 // The Disk menu bar item: the startup disk's free space as "Disk free" over "75 GB",
 // and a panel listing where the space goes: the APFS volumes as
 // coloured rows and a line bar like Stats' RAM panel, then my apps / files broken
-// down into folders three levels deep. Private folders (Desktop, Documents,
-// Downloads, Music, Movies, other apps' data, Mail, Photos and the like) are never
-// opened, so macOS never asks for access to them.
+// down into folders three levels deep, then a section per external disk. Private folders
+// (Desktop, Documents, Downloads, Music, Movies, other apps' data, Mail, Photos and the like)
+// stay closed, so macOS never asks about them, until you click Grant on one: that click opens
+// it once, macOS asks, and on Allow later measurements open exactly what the click opened.
 
 import Cocoa
 
@@ -59,6 +60,9 @@ final class Entry: Codable {
     /// True when the scan dropped a folder inside this one (too small to list) that held
     /// something unmeasured, so this folder's size stays a minimum whatever is granted.
     var droppedUnmeasured = false
+    /// True when this is a granted Music or Movies folder and a folder made inside it after the
+    /// Grant click was left out (macOS was never asked about it): the row offers Grant again.
+    var leftOut = false
     var children: [Entry] = []
 
     init(title: String, path: String? = nil, bytes: Int64 = 0) {
@@ -68,7 +72,7 @@ final class Entry: Codable {
     }
 
     // A measurement saved by an earlier release lacks the newer keys, so each one has a default.
-    enum CodingKeys: String, CodingKey { case title, path, bytes, note, partial, refused, droppedUnmeasured, children }
+    enum CodingKeys: String, CodingKey { case title, path, bytes, note, partial, refused, droppedUnmeasured, leftOut, children }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -79,6 +83,7 @@ final class Entry: Codable {
         partial = try values.decodeIfPresent(Bool.self, forKey: .partial) ?? false
         refused = try values.decodeIfPresent(Bool.self, forKey: .refused) ?? false
         droppedUnmeasured = try values.decodeIfPresent(Bool.self, forKey: .droppedUnmeasured) ?? false
+        leftOut = try values.decodeIfPresent(Bool.self, forKey: .leftOut) ?? false
         children = try values.decodeIfPresent([Entry].self, forKey: .children) ?? []
     }
 
@@ -212,20 +217,34 @@ let privatePackageExtensions: Set<String> = [
 /// biggest first. Counts allocated blocks like du (a cloned file counts in full,
 /// a hard-linked one once) and stays on root's volume. Private folders are listed
 /// but never opened, so measuring causes no privacy prompt, except those in `granted`,
-/// which are measured like any other. `Volumes` is neither opened nor listed. A walked
-/// path is compared to `granted.folders` in its canonical form.
+/// which are measured like any other. Inside a folder with a snapshot in `granted` (a granted
+/// Music or Movies), only what the snapshot names is opened; anything else is left out and
+/// the folder's size becomes a minimum. `Volumes` is neither opened nor listed. A walked
+/// path is compared to `granted` in its canonical form.
 func scanFolders(
     _ root: String, depth: Int = folderDepth, minimumBytes: Int64 = defaultMinimumBytes, granted: GrantSet = GrantSet()
 ) -> [Entry] {
     scanTree(root, depth: depth, minimumBytes: minimumBytes, granted: granted).folders
 }
 
-/// What `scanFolders` finds, plus the size of `root` itself and whether something inside it
-/// was left uncounted. `users` is the folder of homes; it is `root`'s `Users` unless the
-/// scan is of one folder inside a tree measured from higher up.
+/// What `scanTree` finds: the folders `scanFolders` lists, the size of the root itself,
+/// whether something inside it was left uncounted, the granted media folders (canonical
+/// paths) in which macOS refused a part, and whether the root is a media folder in which a
+/// folder made after its Grant click was left out.
+struct ScanResult {
+    let folders: [Entry]
+    let bytes: Int64
+    let partial: Bool
+    let droppedUnmeasured: Bool
+    let refusedBelow: Set<String>
+    let leftOut: Bool
+}
+
+/// `scanFolders`, with the rest of what the scan finds. `users` is the folder of homes; it is
+/// `root`'s `Users` unless the scan is of one folder inside a tree measured from higher up.
 func scanTree(
     _ root: String, depth: Int, minimumBytes: Int64, granted: GrantSet, users usersFolder: String? = nil
-) -> (folders: [Entry], bytes: Int64, partial: Bool, droppedUnmeasured: Bool) {
+) -> ScanResult {
     let rootPath = root.count > 1 && root.hasSuffix("/") ? String(root.dropLast()) : root
     let base = rootPath == "/" ? "" : rootPath
     let volumes = base + "/Volumes"  // removable and network disks
@@ -241,11 +260,24 @@ func scanTree(
     var counted = Set<UInt64>()  // hard-linked files already counted, by inode
     var rootBytes: Int64 = 0
     var rootPartial = false
+    var refusedBelow: Set<String> = []
+    var rootLeftOut = false
 
     var argv: [UnsafeMutablePointer<CChar>?] = [strdup(rootPath), nil]
     defer { free(argv[0]) }
-    guard let fts = fts_open(&argv, FTS_PHYSICAL | FTS_XDEV | FTS_NOCHDIR, nil) else { return ([], 0, false, false) }
+    guard let fts = fts_open(&argv, FTS_PHYSICAL | FTS_XDEV | FTS_NOCHDIR, nil) else {
+        return ScanResult(folders: [], bytes: 0, partial: false, droppedUnmeasured: false, refusedBelow: [], leftOut: false)
+    }
     defer { fts_close(fts) }
+
+    /// The granted Music or Movies folder that `path` is strictly inside, as a canonical path.
+    func grantedMediaFolder(holding path: String) -> String? {
+        guard path.hasPrefix(users + "/") else { return nil }
+        let inside = path.dropFirst(users.count + 1).split(separator: "/", omittingEmptySubsequences: true)
+        guard inside.count > 2 else { return nil }
+        let folder = "\(users)/\(inside[0])/\(inside[1])"
+        return isMediaFolder(folder, users: users) && granted.folders.contains(canonicalPath(folder)) ? canonicalPath(folder) : nil
+    }
 
     func add(_ bytes: Int64, through level: Int) {
         rootBytes += bytes
@@ -263,6 +295,16 @@ func scanTree(
             let path = String(cString: entry.pointee.fts_path)
             if level == 1 && path == volumes {
                 fts_set(fts, entry, FTS_SKIP)  // not listed: the disks have their own rows
+                continue
+            }
+            // Inside a granted media folder, only what was there at the Grant click: a part
+            // macOS guards that was made later was never asked about. Not listed; the folders
+            // above it become minimums, and the media folder's row offers Grant again.
+            if level >= 1, let allowed = granted.snapshots[canonicalPath((path as NSString).deletingLastPathComponent)],
+               !allowed.contains((path as NSString).lastPathComponent) {
+                fts_set(fts, entry, FTS_SKIP)
+                markAncestorsPartial(below: level)
+                if level == 1 { rootLeftOut = true } else if level - 1 <= depth { ancestors[level - 1]?.leftOut = true }
                 continue
             }
             if level >= 1 && level <= depth {
@@ -286,6 +328,11 @@ func scanTree(
         case FTS_DNR:
             if level >= 1 && level <= depth { ancestors[level]?.note = "no access" }
             markAncestorsPartial(below: level)
+            // macOS refusing a part of a granted Music or Movies (Don't Allow to the media
+            // library) says "not permitted"; the folder's row then offers System Settings.
+            if entry.pointee.fts_errno == EPERM, let media = grantedMediaFolder(holding: String(cString: entry.pointee.fts_path)) {
+                refusedBelow.insert(media)
+            }
         case FTS_F, FTS_SL, FTS_SLNONE, FTS_DEFAULT:
             let stat = entry.pointee.fts_statp.pointee
             if stat.st_nlink > 1 && !counted.insert(UInt64(stat.st_ino)).inserted { continue }
@@ -314,7 +361,8 @@ func scanTree(
         .map { entry in entry.children = keep(entry.children, in: entry); return entry }
     }
     let folders = keep(top, in: nil)
-    return (folders, rootBytes, rootPartial, droppedAtTop)
+    return ScanResult(folders: folders, bytes: rootBytes, partial: rootPartial, droppedUnmeasured: droppedAtTop,
+                      refusedBelow: refusedBelow, leftOut: rootLeftOut)
 }
 
 /// The order of rows in a list: bytes descending, then title.
@@ -378,10 +426,13 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     var granted = GrantSet()
     /// The folders being measured after a Grant click, as canonical paths; their rows spin.
     private var granting: Set<String> = []
-    /// Every measurement that walks a disk (the startup disk's folders, each external disk's)
-    /// runs here, one after another, so two never compete for the disk. A Grant click on a
-    /// home folder measures on its own queue instead, since the person is waiting for it.
+    /// The startup disk's measurement runs here, and only it, so a slow or stalled external
+    /// disk never holds it up. A Grant click measures on its own queue instead, since the
+    /// person is waiting for it.
     let measureQueue = DispatchQueue(label: "sh.csarko.MacStats.measure", qos: .utility)
+    /// The external disks' own measurements (not after a click) run here, one after another,
+    /// so two disks never compete and none waits on the startup disk.
+    let volumeQueue = DispatchQueue(label: "sh.csarko.MacStats.volumes", qos: .utility)
 
     init() {
         super.init(title: "Disk")
@@ -473,8 +524,8 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         updateStatus()
     }
 
-    /// The startup disk's measurement is queued first; the external disks', read once their
-    /// list arrives, queue behind it.
+    /// The startup disk is measured on `measureQueue`; the external disks, read once their list
+    /// arrives, on `volumeQueue`.
     override func willOpen() {
         refreshSpaces()
         if measuredAt.map({ Date().timeIntervalSince($0) > 600 }) ?? true { measureFolders() }
@@ -521,7 +572,8 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     /// Measures the folders again. The last measurement stays on screen until the new
     /// one replaces it; only with none to show does the list wait, empty, for the first.
     /// The private folders it opens are the granted ones, read again now: a rebuilt app's
-    /// grants start empty, so it opens none until one is clicked. It runs on `measureQueue`.
+    /// grants start empty, so it opens none until one is clicked; inside a granted Music or
+    /// Movies, only what was there at the click. It runs on `measureQueue`.
     func measureFolders() {
         guard !scanning else { return }
         scanning = true
@@ -530,26 +582,32 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         spinner.startAnimation(nil)
         updateStatus()
         measureQueue.async {
-            let measured = scanFolders(dataVolume, granted: granted)
+            let scan = scanTree(dataVolume, depth: folderDepth, minimumBytes: defaultMinimumBytes, granted: granted)
+            let measured = scan.folders
             DispatchQueue.main.async {
                 self.scanning = false
                 self.spinner.stopAnimation(nil)
-                // A granted folder it could not open offers System Settings, and its grant is dropped.
-                for path in refusedGrants(measured, granted: granted) { self.grants.remove(folder: path) }
+                // A granted folder it could not open offers System Settings, and its grant is
+                // dropped; a media folder refused inside keeps its grant and its size. Both are
+                // remembered as refused, and a folder that opened in full no longer is.
+                let refusedNow = Set(refusedGrants(measured, granted: granted).map(canonicalPath))
+                for path in refusedNow {
+                    self.grants.remove(folder: path)
+                    self.grants.add(refused: path)
+                }
+                for path in scan.refusedBelow { self.grants.add(refused: path) }
+                for path in granted.folders.subtracting(refusedNow).subtracting(scan.refusedBelow) {
+                    self.grants.remove(refused: path)
+                }
                 self.granted = self.grants.load()
+                markRefused(measured, refused: self.granted.refused)
                 // A folder granted while this measurement ran is not in it. One clicked from a
                 // refused row waits, still refused, for Measure again once it is allowed in
                 // System Settings; any other is measured into the new list.
                 let grantedSince = self.granted.folders.subtracting(granted.folders)
-                let waiting = grantedSince.filter { grantChain($0, in: self.folders)?.last?.refused == true }
-                for path in waiting {
-                    guard let entry = grantChain(path, in: measured)?.last, entry.note != nil else { continue }
-                    entry.note = "no access"
-                    entry.refused = true
-                }
                 self.show(measured, at: Date())
                 self.saveMeasurement()
-                for path in grantedSince.subtracting(waiting) { self.measureGrant(path) }
+                for path in grantedSince.subtracting(self.granted.refused) { self.measureGrant(path) }
             }
         }
     }
@@ -586,12 +644,15 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     }
 
     /// A folder the saved measurement shows open but this build has no grant for (after a
-    /// rebuild) shows as private again, as the next measurement will show it.
+    /// rebuild) shows as private again, as the next measurement will show it, and one this
+    /// build remembers as refused shows `no access`. A `Volumes` row saved by 1.0.0 is left out.
     private func loadSavedMeasurement() {
         guard let url = Self.savedMeasurementURL, let data = try? Data(contentsOf: url),
               let saved = try? JSONDecoder().decode(SavedMeasurement.self, from: data) else { return }
-        closeUngranted(saved.folders, granted: granted)
-        show(saved.folders.sorted(by: isLarger), at: saved.measuredAt)
+        let folders = droppingVolumesRow(saved.folders)
+        closeUngranted(folders, granted: granted)
+        markRefused(folders, refused: granted.refused)
+        show(folders.sorted(by: isLarger), at: saved.measuredAt)
     }
 
     private func updateStatus() {
@@ -659,8 +720,14 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
                 cell.hoverTip = twoLines("Allowed in System Settings › Privacy\u{00A0}&\u{00A0}Security › "
                                          + privacyPane(for: entry.path ?? "").title)
                 if cell.showsGrant { cell.button.hoverTip = cell.hoverTip }
+            } else if entry.leftOut {
+                cell.hoverTip = twoLines("Folders made in it since you granted it are not counted yet.")
+                if cell.showsGrant {
+                    cell.button.hoverTip = twoLines("Opens what was added since; macOS may ask you to allow it.")
+                }
             } else {
-                cell.hoverTip = entry.note == "private" && !canGrant(entry)
+                // A private or unreadable folder without a button (Mail, the Trash).
+                cell.hoverTip = entry.note != nil && !canGrant(entry)
                     ? twoLines("macOS has no dialog for this folder; Finder's Get Info gives its size.") : nil
             }
             cell.measuring = measuring  // hides the button too
@@ -698,21 +765,23 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     // MARK: The Grant button on the hovered row
 
-    /// Whether a row can carry a Grant button: a private folder, or one macOS refused after
-    /// a grant, that opening once makes macOS ask about.
+    /// Whether a row can carry a Grant button: a private folder, one macOS refused after a
+    /// grant (a media folder refused inside keeps its size), or a granted media folder that
+    /// left out something made since the click, that opening once makes macOS ask about.
     private func canGrant(_ entry: Entry) -> Bool {
-        entry.note != nil && (entry.note == "private" || entry.refused) && grantKind(for: entry.path ?? "") == .dialog
+        (entry.note == "private" || entry.refused || entry.leftOut) && grantKind(for: entry.path ?? "") == .dialog
     }
 
     /// Grant means "measure this folder now": the folder is remembered as granted and measured
-    /// on its own, and macOS shows its dialog the first time. On a folder macOS refused, it
-    /// opens System Settings instead, since macOS never asks twice; the folder stays granted,
-    /// so the next measurement opens it if the person allows it there. The panel stays open,
-    /// except for System Settings.
+    /// on its own, and macOS shows its dialog the first time. A Music or Movies folder's
+    /// contents are recorded first: later measurements open only those. On a folder macOS
+    /// refused, it opens System Settings instead, since macOS never asks twice; the folder
+    /// stays granted, so the next measurement opens it if the person allows it there. The
+    /// panel stays open, except for System Settings.
     @objc private func grantClicked(_ sender: NSButton) {
         guard let entry = outline.item(atRow: outline.row(for: sender)) as? Entry, let path = entry.path,
               canGrant(entry) else { return }
-        grants.add(folder: path)
+        grants.add(folder: path, snapshot: isMediaFolder(path) ? folderNames(in: path) : nil)
         granted = grants.load()
         if entry.refused {
             orderOut(nil)
@@ -729,7 +798,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     /// never undo each other. If the panel closes first, the result shows when it next opens.
     private func measureGrant(_ path: String) {
         let key = canonicalPath(path)
-        guard !granting.contains(key), let entry = grantChain(key, in: folders)?.last, entry.note == "private",
+        guard !granting.contains(key), let entry = grantChain(key, in: folders)?.last, entry.note == "private" || entry.leftOut,
               let target = grantTarget(key, in: folders) else { return }
         granting.insert(key)
         sizeCell(at: outline.row(forItem: entry))?.measuring = true
@@ -739,11 +808,19 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.granting.remove(key)
-                // A refusal, or a folder that is gone, keeps no grant.
-                if !measurement.opened {
+                // A refusal, or a folder that is gone, keeps no grant; a refusal is remembered,
+                // so the row offers System Settings after the next measurement too. A media
+                // folder refused inside keeps its grant.
+                switch measurement {
+                case .refused:
                     self.grants.remove(folder: key)
-                    self.granted = self.grants.load()
+                    self.grants.add(refused: key)
+                case .unchanged:
+                    self.grants.remove(folder: key)
+                case let .measured(scan):
+                    if scan.refusedBelow.contains(key) { self.grants.add(refused: key) } else { self.grants.remove(refused: key) }
                 }
+                self.granted = self.grants.load()
                 splice(measurement, at: key, in: self.folders)
                 self.showSplice(at: key)
                 self.saveMeasurement()

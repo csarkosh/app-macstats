@@ -1,6 +1,8 @@
 // Which private folders in the Disk panel can be opened with a Grant button, and the set
-// of folders the scan may open. The rules look at the path only, so deciding never causes
-// a macOS privacy prompt; only `measureGranted`, run on a Grant click, opens a private folder.
+// of folders and disks the scan may open. The rules look at the path only, so deciding never
+// causes a macOS privacy prompt. A private folder is opened only by `measureGranted` after a
+// Grant click, and afterwards by the panel's own measurements of exactly what a click opened,
+// for as long as this build of the app remembers it.
 
 import AppKit
 import Security
@@ -10,12 +12,23 @@ import Security
 /// whatever the person answers; `notPrivate` when the path is not a private one.
 enum GrantKind: String { case dialog, none, notPrivate = "not private" }
 
-/// The folders MacStats may open, as canonical paths, and whether it may open the
-/// removable and network disks.
+/// What MacStats may open, as the person granted it with clicks: folders as canonical paths,
+/// disks by volume UUID, and what a Music or Movies folder held when it was granted.
 struct GrantSet: Equatable {
     var folders: Set<String> = []
-    var removableVolumes = false
-    var networkVolumes = false
+    /// Each disk is granted on its own: a disk macOS never asks about (a disk image, say) must
+    /// not let the next USB disk be opened without a click.
+    var volumes: Set<String> = []
+    /// For a granted Music or Movies folder, the names of the folders directly inside it at
+    /// the last Grant click. macOS guards a part inside those (`Music/Music`, `Movies/TV`)
+    /// that the Music and TV apps make the first time they run; one made after the click was
+    /// never asked about, so a measurement leaves out any folder not named here until the
+    /// next click on the row.
+    var snapshots: [String: [String]] = [:]
+    /// Folders macOS refused to this build after a Grant click, as canonical paths: their rows
+    /// show `no access` and their Grant button opens System Settings, since macOS never asks
+    /// twice.
+    var refused: Set<String> = []
 }
 
 /// The path without the Data volume's prefix, so a folder spelled with it and spelled
@@ -27,6 +40,11 @@ func canonicalPath(_ path: String) -> String {
     return path.hasPrefix(prefix + "/") ? String(path.dropFirst(prefix.count)) : path
 }
 
+/// The canonical path's parts, without empty ones.
+private func pathParts(_ path: String) -> [String] {
+    canonicalPath(path).split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+}
+
 /// The folders directly in a home that macOS asks about once and then remembers.
 private let grantableHomeFolders: Set<String> = ["Desktop", "Documents", "Downloads", "Music", "Movies"]
 
@@ -34,11 +52,8 @@ private let grantableHomeFolders: Set<String> = ["Desktop", "Documents", "Downlo
 /// Downloads, Music and Movies directly in a home under `users`, and for a mount point
 /// under /Volumes; `none` for every other private path; `notPrivate` otherwise.
 func grantKind(for path: String, users: String = "/Users") -> GrantKind {
-    func parts(_ path: String) -> [String] {
-        canonicalPath(path).split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-    }
-    let path = parts(path)
-    let homes = parts(users)
+    let path = pathParts(path)
+    let homes = pathParts(users)
 
     if path.count == 2, path[0] == "Volumes" { return .dialog }
 
@@ -55,23 +70,37 @@ func grantKind(for path: String, users: String = "/Users") -> GrantKind {
     return .notPrivate
 }
 
+/// Whether `path` is Music or Movies directly in a home under `users`: a row whose dialog is
+/// the media library's, which macOS shows when a scan reaches a guarded part inside the folder
+/// rather than the folder itself. A Grant click on one records the folders inside it
+/// (`GrantSet.snapshots`), and a refusal inside it marks the row refused.
+func isMediaFolder(_ path: String, users: String = "/Users") -> Bool {
+    let path = pathParts(path)
+    let homes = pathParts(users)
+    return path.count == homes.count + 2 && Array(path.prefix(homes.count)) == homes
+        && ["Music", "Movies"].contains(path[homes.count + 1])
+}
+
+/// The names of the folders and files directly in `path`, for a media folder's snapshot.
+/// Read on the Grant click; Music and Movies themselves open without a dialog.
+func folderNames(in path: String) -> [String] {
+    ((try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []).sorted()
+}
+
 // MARK: - Measuring one granted folder
 
 enum GrantOutcome { case measured, refused, unchanged }
 
 /// What measuring one granted folder found, before it is spliced into the tree.
 enum GrantMeasurement {
-    case measured(bytes: Int64, partial: Bool, droppedUnmeasured: Bool, children: [Entry])
+    /// The folder opened; what the scan of it found. Its `refusedBelow` names the folder when
+    /// it is a granted Music or Movies in which macOS refused a part (the person said Don't
+    /// Allow to the media library).
+    case measured(ScanResult)
     /// macOS would not let the folder be opened (EACCES or EPERM).
     case refused
     /// The folder could not be opened for another reason (it is gone, say), or is not listed.
     case unchanged
-
-    /// Whether the folder opened and was measured.
-    var opened: Bool {
-        if case .measured = self { return true }
-        return false
-    }
 }
 
 /// Where a listed folder is measured from. It is read from the tree by whoever owns the
@@ -112,36 +141,41 @@ func grantTarget(_ path: String, in folders: [Entry], depth: Int = folderDepth) 
 func measureGranted(_ target: GrantTarget, minimumBytes: Int64 = defaultMinimumBytes, granted: GrantSet) -> GrantMeasurement {
     guard let handle = opendir(target.path) else { return errno == EACCES || errno == EPERM ? .refused : .unchanged }
     closedir(handle)
-    let scan = scanTree(target.path, depth: target.depth, minimumBytes: minimumBytes, granted: granted, users: target.users)
-    return .measured(bytes: scan.bytes, partial: scan.partial, droppedUnmeasured: scan.droppedUnmeasured, children: scan.folders)
+    return .measured(scanTree(target.path, depth: target.depth, minimumBytes: minimumBytes, granted: granted, users: target.users))
 }
 
 /// Splices a measurement into `folders` in place, at the entry listed at `path`, but only while
-/// that entry is still unmeasured (it has a note). A measured folder loses its note and gains
+/// that entry is still unmeasured (it has a note) or is a media folder that left out something
+/// new (`leftOut`), measured again after a click. A measured folder loses its note and gains
 /// bytes and children. Every ancestor grows by the same bytes, and each ancestor's `partial` is
 /// recomputed from what is still unmeasured below it (a listed note, or a small folder the scan
 /// dropped with something unmeasured inside). A refusal leaves the entry `no access` and
-/// `refused`. Anything else (not listed, already measured, `.unchanged`) changes nothing and
-/// returns `.unchanged`. The top level of `folders` keeps its order: a caller that wants it
-/// sorted again sorts with `isLarger`.
+/// `refused`; a media folder refused inside keeps its `≥` size and is marked `refused`.
+/// Anything else (not listed, already measured, `.unchanged`) changes nothing and returns
+/// `.unchanged`. The top level of `folders` keeps its order: a caller that wants it sorted
+/// again sorts with `isLarger`.
 @discardableResult
 func splice(_ measurement: GrantMeasurement, at path: String, in folders: [Entry]) -> GrantOutcome {
-    guard let chain = grantChain(path, in: folders), let entry = chain.last, entry.note != nil else { return .unchanged }
+    guard let chain = grantChain(path, in: folders), let entry = chain.last, entry.note != nil || entry.leftOut else {
+        return .unchanged
+    }
     switch measurement {
     case .unchanged:
         return .unchanged
     case .refused:
-        entry.note = "no access"
+        // A folder measured before keeps its size; either way its Grant opens System Settings.
+        if entry.note != nil { entry.note = "no access" }
         entry.refused = true
         return .refused
-    case let .measured(bytes, partial, droppedUnmeasured, children):
-        let added = bytes - entry.bytes
+    case let .measured(scan):
+        let added = scan.bytes - entry.bytes
         entry.note = nil
-        entry.refused = false
-        entry.bytes = bytes
-        entry.partial = partial
-        entry.droppedUnmeasured = droppedUnmeasured
-        entry.children = children
+        entry.refused = scan.refusedBelow.contains(canonicalPath(path))
+        entry.leftOut = scan.leftOut
+        entry.bytes = scan.bytes
+        entry.partial = scan.partial
+        entry.droppedUnmeasured = scan.droppedUnmeasured
+        entry.children = scan.folders
 
         // From the entry's parent up: grow, re-sort the children, and recompute the minimum mark.
         for ancestor in chain.dropLast().reversed() {
@@ -191,6 +225,7 @@ func closeUngranted(_ folders: [Entry], granted: GrantSet) {
             entry.bytes = 0
             entry.partial = false
             entry.droppedUnmeasured = false
+            entry.leftOut = false
             entry.children = []
             for ancestor in ancestors { ancestor.children.sort(by: isLarger) }
         }
@@ -216,6 +251,24 @@ func refusedGrants(_ folders: [Entry], granted: GrantSet) -> [String] {
     return refused
 }
 
+/// Marks the rows of the folders in `refused` (the store's, for this build) as macOS refused
+/// them, on load and after each measurement, so the first Grant click on one opens System
+/// Settings instead of opening the folder again, which macOS would refuse without a word. A
+/// private row becomes `no access`; a measured media folder keeps its size.
+func markRefused(_ folders: [Entry], refused: Set<String>) {
+    for path in refused {
+        guard let entry = grantChain(path, in: folders)?.last else { continue }
+        if entry.note == "private" { entry.note = "no access" }
+        if entry.note != nil || isMediaFolder(path) { entry.refused = true }
+    }
+}
+
+/// Leaves out a top-level `Volumes` row, which a measurement saved by 1.0.0 lists: the
+/// external disks have their own sections now.
+func droppingVolumesRow(_ folders: [Entry]) -> [Entry] {
+    folders.filter { canonicalPath($0.path ?? "") != "/Volumes" }
+}
+
 // MARK: - System Settings
 
 /// The Privacy & Security panes where a folder macOS refused can be allowed.
@@ -233,10 +286,10 @@ enum PrivacyPane {
     }
 }
 
-/// The pane that allows a private folder: Media & Apple Music for Music and Movies, whose
-/// dialog is the media library's; Files and Folders for the rest.
+/// The pane that allows a private folder: Media & Apple Music for Music and Movies in a home,
+/// whose dialog is the media library's; Files and Folders for the rest.
 func privacyPane(for path: String) -> PrivacyPane {
-    ["Music", "Movies"].contains((path as NSString).lastPathComponent) ? .mediaLibrary : .filesAndFolders
+    isMediaFolder(path) ? .mediaLibrary : .filesAndFolders
 }
 
 /// Opens System Settings at the pane, falling back to Privacy & Security.
@@ -250,17 +303,20 @@ func openPrivacySettings(_ pane: PrivacyPane) {
 // MARK: - Remembering grants
 
 /// The folders and disks the person has let MacStats open, kept in the app's defaults and
-/// tied to the build that asked. macOS ties a permission to the app's code signature, and an
-/// ad-hoc signed build gets a new signature every time it is built, so after a rebuild macOS
-/// asks again the next time a folder is opened. Grants made by another build therefore count
-/// as not given: the next measurement skips those folders instead of prompting without a click.
+/// tied to the build that asked. macOS ties a permission to the app's designated requirement:
+/// for a build signed on this Mac (ad hoc) that is its exact code, so after a rebuild macOS
+/// asks again the next time a folder is opened; for the signed release it is the app's name
+/// and developer, which every version shares. Grants made by another build therefore count as
+/// not given: the next measurement skips those folders instead of prompting without a click.
 final class GrantStore {
     static let suite = "sh.csarko.MacStats"
 
-    private enum Key {
+    /// Every key the store writes (AGENTS.md's hand-testing reset deletes them).
+    enum Key {
         static let folders = "grantedFolders"
-        static let removable = "removableVolumesGranted"
-        static let network = "networkVolumesGranted"
+        static let volumes = "grantedVolumes"
+        static let snapshots = "grantSnapshots"
+        static let refused = "refusedFolders"
         static let build = "grantsBuild"
     }
 
@@ -271,23 +327,36 @@ final class GrantStore {
     /// The app's own defaults. The bundled app's identifier is exactly `suite`, and macOS
     /// refuses to open a suite named like the app itself, so the app uses its standard
     /// defaults; the bare binary opens the suite. Both read and write the same
-    /// `sh.csarko.MacStats` domain.
+    /// `sh.csarko.MacStats` domain. The environment's `MACSTATS_DEFAULTS_SUITE` names another
+    /// suite instead, for the tests; one that will not open stops the program, so a typo never
+    /// reads or writes the real grants.
     static var defaultDefaults: UserDefaults {
+        if let name = ProcessInfo.processInfo.environment["MACSTATS_DEFAULTS_SUITE"], !name.isEmpty {
+            guard let defaults = UserDefaults(suiteName: name) else {
+                FileHandle.standardError.write("MACSTATS_DEFAULTS_SUITE: cannot open \(name)\n".data(using: .utf8)!)
+                exit(2)
+            }
+            return defaults
+        }
         if Bundle.main.bundleIdentifier == suite { return .standard }
         return UserDefaults(suiteName: suite) ?? .standard
     }
 
-    /// The running code's cdhash as hex; "unsigned" when there is none.
+    /// The running code's designated requirement as text, the rule macOS matches a permission
+    /// against: `cdhash H"…"` for a build signed on this Mac, its identifier and developer for
+    /// a Developer ID build, so the signed release keeps its grants from version to version.
+    /// "unsigned" when there is none, and an unsigned build remembers no grant.
     static func buildIdentity() -> String {
         var code: SecCode?
         var staticCode: SecStaticCode?
-        var info: CFDictionary?
+        var requirement: SecRequirement?
+        var text: CFString?
         guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess, let code,
               SecCodeCopyStaticCode(code, SecCSFlags(), &staticCode) == errSecSuccess, let staticCode,
-              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: 0)  /* kSecCSDefaultFlags */, &info) == errSecSuccess,
-              let values = info as? [String: Any],
-              let unique = values[kSecCodeInfoUnique as String] as? Data, !unique.isEmpty else { return "unsigned" }
-        return unique.map { String(format: "%02x", $0) }.joined()
+              SecCodeCopyDesignatedRequirement(staticCode, SecCSFlags(), &requirement) == errSecSuccess, let requirement,
+              SecRequirementCopyString(requirement, SecCSFlags(), &text) == errSecSuccess, let text else { return "unsigned" }
+        let identity = text as String
+        return identity.isEmpty ? "unsigned" : identity
     }
 
     init(defaults: UserDefaults = GrantStore.defaultDefaults, build: String = GrantStore.buildIdentity()) {
@@ -295,38 +364,51 @@ final class GrantStore {
         self.build = build
     }
 
-    /// Empty when the stored build differs from this one. Nothing is erased: the next write
-    /// stores this build's identity and replaces the old grants.
+    /// Empty when the stored build differs from this one, or this one is unsigned. Nothing is
+    /// erased: the next write stores this build's identity and replaces the old grants. A
+    /// media folder remembered without a snapshot has an empty one, so nothing inside it opens.
     func load() -> GrantSet {
-        guard defaults.string(forKey: Key.build) == build else { return GrantSet() }
-        return GrantSet(
+        guard build != "unsigned", defaults.string(forKey: Key.build) == build else { return GrantSet() }
+        var granted = GrantSet(
             folders: Set(defaults.stringArray(forKey: Key.folders) ?? []),
-            removableVolumes: defaults.bool(forKey: Key.removable),
-            networkVolumes: defaults.bool(forKey: Key.network))
+            volumes: Set(defaults.stringArray(forKey: Key.volumes) ?? []),
+            snapshots: defaults.dictionary(forKey: Key.snapshots) as? [String: [String]] ?? [:],
+            refused: Set(defaults.stringArray(forKey: Key.refused) ?? []))
+        for folder in granted.folders where isMediaFolder(folder) && granted.snapshots[folder] == nil {
+            granted.snapshots[folder] = []
+        }
+        return granted
     }
 
-    func add(folder: String) {
-        var current = load()
-        current.folders.insert(key(for: folder))
-        save(current)
+    /// Remembers a granted folder; `snapshot`, for a media folder, replaces what was recorded
+    /// as inside it.
+    func add(folder: String, snapshot: [String]? = nil) {
+        let folder = key(for: folder)
+        update {
+            $0.folders.insert(folder)
+            if let snapshot { $0.snapshots[folder] = snapshot }
+        }
     }
 
     func remove(folder: String) {
-        var current = load()
-        current.folders.remove(key(for: folder))
-        save(current)
+        let folder = key(for: folder)
+        update {
+            $0.folders.remove(folder)
+            $0.snapshots[folder] = nil
+        }
     }
 
-    func set(removableVolumes: Bool) {
-        var current = load()
-        current.removableVolumes = removableVolumes
-        save(current)
+    func add(volume uuid: String) { update { $0.volumes.insert(uuid) } }
+    func remove(volume uuid: String) { update { $0.volumes.remove(uuid) } }
+
+    func add(refused folder: String) {
+        let folder = key(for: folder)
+        update { $0.refused.insert(folder) }
     }
 
-    func set(networkVolumes: Bool) {
-        var current = load()
-        current.networkVolumes = networkVolumes
-        save(current)
+    func remove(refused folder: String) {
+        let folder = key(for: folder)
+        update { $0.refused.remove(folder) }
     }
 
     /// The canonical path without a trailing slash ("/" stays).
@@ -336,11 +418,18 @@ final class GrantStore {
         return path
     }
 
+    private func update(_ change: (inout GrantSet) -> Void) {
+        var current = load()
+        change(&current)
+        save(current)
+    }
+
     /// Stores the whole set and this build's identity, so a write after a rebuild starts clean.
     private func save(_ granted: GrantSet) {
         defaults.set(granted.folders.sorted(), forKey: Key.folders)
-        defaults.set(granted.removableVolumes, forKey: Key.removable)
-        defaults.set(granted.networkVolumes, forKey: Key.network)
+        defaults.set(granted.volumes.sorted(), forKey: Key.volumes)
+        defaults.set(granted.snapshots, forKey: Key.snapshots)
+        defaults.set(granted.refused.sorted(), forKey: Key.refused)
         defaults.set(build, forKey: Key.build)
     }
 }

@@ -1,8 +1,8 @@
 // The disks plugged in besides the startup disk (a USB SSD, say): their names and how
 // full they are, read through resource keys, which macOS lets any app read. A disk's
-// folders are opened only after a Grant click on it (macOS asks once for all removable
-// disks, and once for all network disks), and from then on only while that permission is
-// remembered; each disk's last folder list is kept so a replug shows it at once.
+// folders are opened only after a Grant click on that disk, and from then on only while
+// this build remembers that disk; each disk's last folder list is kept so a replug shows it
+// at once.
 
 import Cocoa
 
@@ -209,10 +209,9 @@ final class VolumeSection: NSView {
 // MARK: - The panel's disks
 
 extension DiskPanel {
-    /// Reads the external disks off the main thread (a stalled network share can hang the
-    /// read) and shows a section per disk mounted now, in mount order. Then each disk whose
-    /// kind MacStats may open and whose list is missing or at least `age` seconds old is
-    /// measured, queued behind whatever `measureQueue` holds already.
+    /// Reads the external disks off the main thread and shows a section per disk mounted now,
+    /// in mount order. Then each disk granted with a click on this build whose list is missing
+    /// or at least `age` seconds old is measured, one after another on `volumeQueue`.
     func refreshVolumes(remeasuringOlderThan age: TimeInterval) {
         DispatchQueue.global(qos: .userInitiated).async {
             let volumes = externalVolumes()
@@ -230,8 +229,8 @@ extension DiskPanel {
 
     /// Shows a section per disk in `volumes`, keeping the sections of disks still mounted. A
     /// new section (a disk just plugged in, or plugged in again) shows what was kept for it:
-    /// its folders while MacStats may open its kind of disk, `no access` when macOS refused
-    /// it. Opens no disk.
+    /// its folders while this build remembers its grant, `no access` when macOS refused it.
+    /// Opens no disk.
     private func showVolumes(_ volumes: [ExternalVolume]) {
         var sections: [String: VolumeSection] = [:]
         var inOrder: [VolumeSection] = []
@@ -260,7 +259,7 @@ extension DiskPanel {
         if saved?.isRefused(for: grants.build) == true {
             section.state = .refused
         } else if let measurement = saved?.measurement, mayOpen(volume) {
-            // A rebuilt app may open no disk, so its disks show private until granted again,
+            // A rebuilt app remembers no disk, so its disks show private until granted again,
             // and a refusal another build got shows private too: a click asks macOS afresh.
             section.state = .measured
             section.folders = measurement.folders.sorted(by: isLarger)
@@ -281,35 +280,24 @@ extension DiskPanel {
         }
     }
 
-    /// Whether the person has let MacStats open this kind of disk (removable or network).
+    /// Whether this build remembers a Grant click on this very disk.
     private func mayOpen(_ volume: ExternalVolume) -> Bool {
-        volume.isNetwork ? granted.networkVolumes : granted.removableVolumes
+        granted.volumes.contains(volume.uuid)
     }
 
-    /// Notes whether MacStats may open this kind of disk. Taking it back also puts every
-    /// measured disk of that kind back to private (its kept file stays), so none shows a list
-    /// that Measure again would no longer renew.
-    private func setMayOpen(_ volume: ExternalVolume, _ allowed: Bool) {
-        if volume.isNetwork { grants.set(networkVolumes: allowed) } else { grants.set(removableVolumes: allowed) }
-        granted = grants.load()
-        guard !allowed else { return }
-        for section in volumeSections.values where section.volume.isNetwork == volume.isNetwork && section.state == .measured {
-            section.state = .ungranted
-            section.folders = []
-            section.measuredAt = nil
-            section.refresh()
-            section.outline.reloadData()
-        }
-    }
-
-    /// Grant on a disk's `Folders` row: MacStats may open that kind of disk from now on, and
-    /// the disk is measured, macOS showing its dialog the first time. After a refusal it opens
-    /// System Settings instead, since macOS never asks twice; the permission is still noted,
-    /// so the next opening of the panel measures the disk if the person allows it there.
+    /// Grant on a disk's `Folders` row: this disk, and no other, may be opened from now on,
+    /// and it is measured at once, macOS showing its dialog the first time. macOS's permission
+    /// covers every removable disk (or every network disk), but each disk is granted on its
+    /// own here: a disk macOS never asks about (a disk image) must not lead to the next USB
+    /// disk being opened without a click. A second disk's click shows no dialog, since macOS
+    /// already has the answer. After a refusal it opens System Settings instead, since macOS
+    /// never asks twice; the grant is noted, so the next opening of the panel measures the
+    /// disk if the person allows it there.
     @objc func volumeGrantClicked(_ sender: NSButton) {
         guard let section = volumeSections.values.first(where: { $0.grantCell.button === sender }),
               section.canGrant else { return }
-        setMayOpen(section.volume, true)
+        grants.add(volume: section.volume.uuid)
+        granted = grants.load()
         if section.state == .refused {
             orderOut(nil)
             openPrivacySettings(.filesAndFolders)
@@ -321,10 +309,9 @@ extension DiskPanel {
     /// Measures a disk's folders three levels deep, its `Folders` row spinning, or
     /// "Remeasuring…" showing over a list already shown. After a Grant click it runs at once on
     /// its own queue, so macOS's dialog follows the click; otherwise it waits its turn on
-    /// `measureQueue` and, when its turn comes, runs only if MacStats may still open that kind
-    /// of disk (a refusal on another disk may have taken that back meanwhile). A refusal, or
-    /// after a click a disk that would not open, takes it back, so no disk opens again without
-    /// a click.
+    /// `volumeQueue` and, when its turn comes, runs only if this build still remembers the
+    /// disk's grant. A refusal, or after a click a disk that would not open, forgets the grant,
+    /// so the disk never opens again without a click.
     private func measureVolume(_ section: VolumeSection, clicked: Bool) {
         guard !section.measuring else { return }
         section.measuring = true
@@ -332,16 +319,15 @@ extension DiskPanel {
         let volume = section.volume
         let target = GrantTarget(path: volume.mountPoint, depth: folderDepth, users: nil)
         let store = grants
-        let queue = clicked ? DispatchQueue.global(qos: .userInitiated) : measureQueue
+        let queue = clicked ? DispatchQueue.global(qos: .userInitiated) : volumeQueue
         queue.async { [weak self] in
             let granted = store.load()
-            let allowed = volume.isNetwork ? granted.networkVolumes : granted.removableVolumes
-            let measurement = clicked || allowed ? measureGranted(target, granted: granted) : nil
+            let measurement = clicked || granted.volumes.contains(volume.uuid) ? measureGranted(target, granted: granted) : nil
             DispatchQueue.main.async { self?.showMeasurement(measurement, of: volume, clicked: clicked) }
         }
     }
 
-    /// Shows what measuring a disk found; nil when it was skipped, the permission gone.
+    /// Shows what measuring a disk found; nil when it was skipped, the grant gone.
     private func showMeasurement(_ measurement: GrantMeasurement?, of volume: ExternalVolume, clicked: Bool) {
         guard let measurement else {
             granted = grants.load()
@@ -349,10 +335,13 @@ extension DiskPanel {
             volumeSections[volume.uuid]?.refresh()
             return
         }
-        switch measurement {
-        case .refused: setMayOpen(volume, false)
-        case .unchanged where clicked: setMayOpen(volume, false)
-        default: break
+        // A refusal forgets the grant; so does a disk that would not open after a click.
+        var forget = false
+        if case .refused = measurement { forget = true }
+        if case .unchanged = measurement, clicked { forget = true }
+        if forget {
+            grants.remove(volume: volume.uuid)
+            granted = grants.load()
         }
         // A disk ejected meanwhile keeps what was saved for it before.
         guard let section = volumeSections[volume.uuid] else { return }
@@ -363,10 +352,10 @@ extension DiskPanel {
             section.folders = []
             section.measuredAt = nil
             saveVolume(SavedVolume(refused: true, build: grants.build), uuid: volume.uuid)
-        case let .measured(_, _, _, children):
+        case let .measured(scan):
             let now = Date()
             section.state = .measured
-            section.folders = children.sorted(by: isLarger)
+            section.folders = scan.folders.sorted(by: isLarger)
             section.measuredAt = now
             saveVolume(SavedVolume(measurement: SavedMeasurement(measuredAt: now, folders: section.folders), build: grants.build),
                        uuid: volume.uuid)
