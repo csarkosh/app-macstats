@@ -1,39 +1,74 @@
 // The disks plugged in besides the startup disk (a USB SSD, say): their names and how
-// full they are, read through resource keys, which macOS lets any app read. A disk's
-// folders are opened only after a Grant click on that disk, and from then on only while
-// this build remembers that disk; each disk's last folder list is kept so a replug shows it
-// at once.
+// full they are, read from the list of mounted disks, which macOS lets any app read. A
+// disk's folders are opened only after a Grant click on that disk, and from then on only
+// while this build remembers that disk; each disk's last folder list is kept so a replug
+// shows it at once.
 
 import Cocoa
 
 struct ExternalVolume {
     let name: String
     let mountPoint: String
+    /// The volume's UUID, or its name and mount point (`name@/Volumes/name`) when it has none
+    /// (a network share, some memory cards), so two unnamed cards do not share one.
     let uuid: String
     let total: Int64
     let used: Int64
     let isNetwork: Bool
 }
 
-/// Mounted volumes that are browsable, not the root file system and not internal, in mount order.
-func externalVolumes() -> [ExternalVolume] {
-    let keys: [URLResourceKey] = [
-        .volumeIsBrowsableKey, .volumeIsRootFileSystemKey, .volumeIsInternalKey, .volumeIsLocalKey,
-        .volumeNameKey, .volumeUUIDStringKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey,
-    ]
-    let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
-    return urls.compactMap { url in
-        guard let values = try? url.resourceValues(forKeys: Set(keys)),
-              values.volumeIsBrowsable ?? false,
-              !(values.volumeIsRootFileSystem ?? false),
-              !(values.volumeIsInternal ?? false),
-              let total = values.volumeTotalCapacity, total > 0 else { return nil }
-        let name = values.volumeName ?? url.lastPathComponent
-        let available = values.volumeAvailableCapacity ?? 0
-        return ExternalVolume(name: name, mountPoint: url.path, uuid: values.volumeUUIDString ?? name,
-                              total: Int64(total), used: Int64(total - available),
-                              isNetwork: !(values.volumeIsLocal ?? true))
+/// The mounted file systems, from the kernel's own list. `MNT_NOWAIT` returns what the kernel
+/// already knows, so a stalled network share cannot hang the call.
+private func mountedFileSystems() -> [statfs] {
+    let count = getfsstat(nil, 0, MNT_NOWAIT)
+    guard count > 0 else { return [] }
+    var buffer: [statfs] = Array(repeating: statfs(), count: Int(count))
+    let filled = buffer.withUnsafeMutableBufferPointer {
+        getfsstat($0.baseAddress, Int32($0.count * MemoryLayout<statfs>.stride), MNT_NOWAIT)
     }
+    return Array(buffer.prefix(Int(max(filled, 0))))
+}
+
+/// A fixed-size C string field of `statfs` as a Swift string.
+private func text<T>(_ field: T) -> String {
+    withUnsafeBytes(of: field) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+}
+
+/// The external disk mounted as `fs`, or nil when it is not one: the startup disk, its
+/// `/System/Volumes` parts and anything not mounted under /Volumes are skipped, and so are
+/// local disks that are hidden or internal. A local disk's name and UUID come from resource
+/// keys; a network share's from its mount point alone, since reading anything from a share
+/// that stopped answering can hang.
+private func externalVolume(_ fs: statfs) -> ExternalVolume? {
+    let mountPoint = text(fs.f_mntonname)
+    guard mountPoint != "/", !mountPoint.hasPrefix("/System/Volumes/"), mountPoint.hasPrefix("/Volumes/"),
+          text(fs.f_fstypename) != "autofs", fs.f_flags & UInt32(MNT_DONTBROWSE) == 0 else { return nil }
+    let total = Int64(fs.f_blocks) * Int64(fs.f_bsize)
+    let available = Int64(fs.f_bavail) * Int64(fs.f_bsize)
+    guard total > 0 else { return nil }
+    let used = max(0, total - available)
+    let fallbackName = (mountPoint as NSString).lastPathComponent
+    guard fs.f_flags & UInt32(MNT_LOCAL) != 0 else {
+        return ExternalVolume(name: fallbackName, mountPoint: mountPoint, uuid: "\(fallbackName)@\(mountPoint)",
+                              total: total, used: used, isNetwork: true)
+    }
+    let keys: Set<URLResourceKey> = [.volumeNameKey, .volumeUUIDStringKey, .volumeIsBrowsableKey, .volumeIsInternalKey]
+    guard let values = try? URL(fileURLWithPath: mountPoint, isDirectory: true).resourceValues(forKeys: keys),
+          values.volumeIsBrowsable ?? false, !(values.volumeIsInternal ?? false) else { return nil }
+    let name = values.volumeName ?? fallbackName
+    return ExternalVolume(name: name, mountPoint: mountPoint, uuid: values.volumeUUIDString ?? "\(name)@\(mountPoint)",
+                          total: total, used: used, isNetwork: false)
+}
+
+/// The external disks mounted now, in mount order.
+func externalVolumes() -> [ExternalVolume] {
+    mountedFileSystems().compactMap(externalVolume)
+}
+
+/// The external disk mounted at `mountPoint` now, if any: to check that a disk measured a
+/// moment ago is still the one there, and was not unplugged or swapped meanwhile.
+func externalVolume(mountedAt mountPoint: String) -> ExternalVolume? {
+    mountedFileSystems().first { text($0.f_mntonname) == mountPoint }.flatMap(externalVolume)
 }
 
 // MARK: - Remembering a disk's folders
@@ -311,7 +346,8 @@ extension DiskPanel {
     /// its own queue, so macOS's dialog follows the click; otherwise it waits its turn on
     /// `volumeQueue` and, when its turn comes, runs only if this build still remembers the
     /// disk's grant. A refusal, or after a click a disk that would not open, forgets the grant,
-    /// so the disk never opens again without a click.
+    /// so the disk never opens again without a click. A measurement is kept only if the same
+    /// disk is still mounted at the end (not unplugged, or swapped for another, meanwhile).
     private func measureVolume(_ section: VolumeSection, clicked: Bool) {
         guard !section.measuring else { return }
         section.measuring = true
@@ -322,12 +358,16 @@ extension DiskPanel {
         let queue = clicked ? DispatchQueue.global(qos: .userInitiated) : volumeQueue
         queue.async { [weak self] in
             let granted = store.load()
-            let measurement = clicked || granted.volumes.contains(volume.uuid) ? measureGranted(target, granted: granted) : nil
+            var measurement = clicked || granted.volumes.contains(volume.uuid) ? measureGranted(target, granted: granted) : nil
+            if case .measured? = measurement, externalVolume(mountedAt: volume.mountPoint)?.uuid != volume.uuid {
+                measurement = nil
+            }
             DispatchQueue.main.async { self?.showMeasurement(measurement, of: volume, clicked: clicked) }
         }
     }
 
-    /// Shows what measuring a disk found; nil when it was skipped, the grant gone.
+    /// Shows what measuring a disk found; nil when it was skipped (the grant gone) or thrown
+    /// away (the disk gone).
     private func showMeasurement(_ measurement: GrantMeasurement?, of volume: ExternalVolume, clicked: Bool) {
         guard let measurement else {
             granted = grants.load()
