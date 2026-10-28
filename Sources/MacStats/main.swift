@@ -28,7 +28,7 @@
 //   MacStats --grants [--defaults-suite <name>] [--as-build <id>] [--add-folder <path>] [--set-removable true|false]  # prints the build and the remembered grants, after any writes
 //   MacStats --legend                   # prints the Disk panel's Spaces rows, in order
 //   MacStats --report [folder] [--min-mb N] [--granted <path>]… [--then-grant <path>]  # prints the Disk panel's folders, opening the granted ones; --then-grant measures that folder alone afterwards and splices it in
-//   MacStats --read-measurement <file|->    # prints the folders of a saved measurement (- reads standard input)
+//   MacStats --read-measurement <file|-> [--granted <path>]…  # prints the folders of a saved measurement as the panel shows it (- reads standard input)
 //   MacStats --grantable <path>             # prints dialog, none or "not private": whether a private row gets Grant
 
 import Cocoa
@@ -173,16 +173,20 @@ func tooltipsReport() -> Int32 {
     let gpu = GPUPanel(history: GPUHistory(), reader: reader)
     if let sample = GPUSampler().sample() { gpu.update(sample) }
     // The Disk panel lists a fixed sample, so its rows' tooltips are listed whatever was
-    // measured last: a private folder with a Grant button, one without, and a measured one.
+    // measured last: a private folder with a Grant button, one without, one macOS refused
+    // after a grant, and a measured one.
     // The made-up home is spelled in parts, so the sources name no home directory.
     let disk = DiskPanel()
     let home = URL(fileURLWithPath: "/Users").appendingPathComponent("sample").path
     let measured = Entry(title: "Applications", path: "/Applications", bytes: 12_000_000_000)
     let downloads = Entry(title: "Downloads", path: home + "/Downloads")
     downloads.note = "private"
+    let desktop = Entry(title: "Desktop", path: home + "/Desktop")
+    desktop.note = "no access"
+    desktop.refused = true
     let mail = Entry(title: "Mail", path: home + "/Library/Mail")
     mail.note = "private"
-    disk.show([measured, downloads, mail], at: Date())
+    disk.show([measured, downloads, desktop, mail], at: Date())
     let panels: [(String, StatsPanel)] = [
         ("CPU", CPUPanel(history: CPUHistory(), reader: reader)), ("GPU", gpu),
         ("RAM", RAMPanel(history: MemoryHistory())), ("Temp", temp), ("Disk", disk),
@@ -300,13 +304,17 @@ if let path = argument(after: "--grantable") {
     print(grantKind(for: path).rawValue)  // string rules only: never opens the path
     exit(0)
 }
-if arguments.contains("--report") {
-    let minimumBytes = argument(after: "--min-mb").flatMap(Int64.init).map { $0 * 1_000_000 } ?? defaultMinimumBytes
-    var granted = GrantSet()  // the value after each --granted, as a canonical path
+/// The value after each --granted, as a canonical path.
+func grantedArguments() -> GrantSet {
+    var granted = GrantSet()
     for (index, flag) in arguments.enumerated() where flag == "--granted" && index + 1 < arguments.count {
         granted.folders.insert(canonicalPath(arguments[index + 1]))
     }
-    exit(diskReport(folder: argument(after: "--report"), minimumBytes: minimumBytes, granted: granted,
+    return granted
+}
+if arguments.contains("--report") {
+    let minimumBytes = argument(after: "--min-mb").flatMap(Int64.init).map { $0 * 1_000_000 } ?? defaultMinimumBytes
+    exit(diskReport(folder: argument(after: "--report"), minimumBytes: minimumBytes, granted: grantedArguments(),
                     thenGrant: argument(after: "--then-grant")))
 }
 if let source = argument(after: "--read-measurement") {
@@ -315,7 +323,9 @@ if let source = argument(after: "--read-measurement") {
         FileHandle.standardError.write("Could not read a saved measurement from \(source).\n".data(using: .utf8)!)
         exit(1)
     }
-    printTree(saved.folders, indent: 0)
+    // As the panel shows it at launch: a grantable folder not in --granted is private again.
+    closeUngranted(saved.folders, granted: grantedArguments())
+    printTree(saved.folders.sorted(by: isLarger), indent: 0)
     exit(0)
 }
 

@@ -243,6 +243,7 @@ test("explains every legend key with a tooltip, and keeps every tooltip to two l
     let diskOther = tips.filter { $0[0] == "Disk" && $0[1] == "other" }.map { $0[5] }
     check(diskOther.contains { $0.hasPrefix("Opens this folder once") }, "the Grant button's tooltip")
     check(diskOther.contains { $0.hasPrefix("macOS has no dialog for this folder") }, "the no-button tooltip")
+    check(diskOther.contains { $0.hasPrefix("Allowed in System Settings") }, "the refused folder's tooltip")
     for tip in tips where tip.count == 6 {
         let (panel, kind, name, lines, widest, text) = (tip[0], tip[1], tip[2], Int(tip[3]) ?? 0, Int(tip[4]) ?? 0, tip[5])
         if kind == "key" { check(text.count >= 20, "\(panel) › \(name) explains itself (\(text.debugDescription))") }
@@ -530,6 +531,16 @@ test("reads a saved measurement without the new keys") {
     // 5000000 bytes: the brief's 5 would print as 0 MB.
     let json = #"{"measuredAt":0,"folders":[{"title":"Users","bytes":5000000,"partial":false,"children":[]}]}"#
     checkEqual(try macStats("--read-measurement", "-", stdin: json).lines, ["Users\t5 MB"], "decodes the old shape")
+}
+
+test("reads a saved measurement as the panel shows it: a folder no longer granted is private again") {
+    let folder = { (name: String, mb: Int) in #"{"title":"\#(name)","path":"/Users/alice/\#(name)","bytes":\#(mb)000000}"# }
+    let json = #"{"measuredAt":0,"folders":[{"title":"Users","path":"/Users","bytes":9000000,"children":["#
+        + #"{"title":"alice","path":"/Users/alice","bytes":9000000,"children":["#
+        + [folder("Downloads", 4), folder("Desktop", 3), folder("Code", 2)].joined(separator: ",") + "]}]}]}"
+    let lines = try macStats("--read-measurement", "-", "--granted", "/Users/alice/Desktop", stdin: json).lines
+        .map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(lines, ["Users | ≥ 5 MB", "  alice | ≥ 5 MB", "    Desktop | 3 MB", "    Code | 2 MB", "    Downloads | private"], "the rows")
 }
 
 test("lists no Volumes row") {

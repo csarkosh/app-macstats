@@ -1,8 +1,8 @@
 // Which private folders in the Disk panel can be opened with a Grant button, and the set
-// of folders the scan may open. The rules look at the path only; nothing here touches
-// the file system, so deciding never causes a macOS privacy prompt.
+// of folders the scan may open. The rules look at the path only, so deciding never causes
+// a macOS privacy prompt; only `grant`, run on a Grant click, opens a private folder.
 
-import Foundation
+import AppKit
 import Security
 
 /// How a private row at some path is treated: `dialog` when opening the folder once makes
@@ -117,6 +117,83 @@ func grant(
 /// True when the entry or anything below it has a note (private or no access).
 func hasUnmeasured(_ entry: Entry) -> Bool {
     entry.note != nil || entry.children.contains(where: hasUnmeasured)
+}
+
+/// Puts back as `private` each grantable folder that a saved measurement shows measured or
+/// refused but that `granted` no longer opens (after a rebuild, whose grants start empty), so
+/// the list never shows what the next measurement would not take without a click. Its size
+/// leaves its ancestors, which become minimums. The top level keeps its order, as with `grant`.
+func closeUngranted(_ folders: [Entry], granted: GrantSet) {
+    func walk(_ entries: [Entry], below ancestors: [Entry]) {
+        for entry in entries {
+            guard entry.note == nil || entry.refused, let path = entry.path, grantKind(for: path) == .dialog,
+                  !granted.folders.contains(canonicalPath(path)) else {
+                walk(entry.children, below: ancestors + [entry])
+                continue
+            }
+            for ancestor in ancestors {
+                ancestor.bytes -= entry.bytes
+                ancestor.partial = true
+            }
+            entry.note = "private"
+            entry.refused = false
+            entry.bytes = 0
+            entry.partial = false
+            entry.droppedUnmeasured = false
+            entry.children = []
+            for ancestor in ancestors { ancestor.children.sort(by: isLarger) }
+        }
+    }
+    walk(folders, below: [])
+}
+
+/// The granted folders a measurement could not open, because the person never allowed them or
+/// turned them off in System Settings: each is marked refused, so its Grant button opens
+/// System Settings, and returned so its grant can be dropped and later measurements skip it.
+func refusedGrants(_ folders: [Entry], granted: GrantSet) -> [String] {
+    var refused: [String] = []
+    func walk(_ entries: [Entry]) {
+        for entry in entries {
+            if entry.note == "no access", let path = entry.path, granted.folders.contains(canonicalPath(path)) {
+                entry.refused = true
+                refused.append(path)
+            }
+            walk(entry.children)
+        }
+    }
+    walk(folders)
+    return refused
+}
+
+// MARK: - System Settings
+
+/// The Privacy & Security panes where a folder macOS refused can be allowed.
+enum PrivacyPane {
+    case filesAndFolders, mediaLibrary
+
+    /// The pane's name in System Settings.
+    var title: String { self == .mediaLibrary ? "Media & Apple Music" : "Files and Folders" }
+
+    /// Addresses of the pane, tried in order: the older form, then the newer one.
+    fileprivate var addresses: [String] {
+        let anchor = self == .mediaLibrary ? "Privacy_Media" : "Privacy_FilesAndFolders"
+        return ["x-apple.systempreferences:com.apple.preference.security?" + anchor,
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?" + anchor]
+    }
+}
+
+/// The pane that allows a private folder: Media & Apple Music for Music and Movies, whose
+/// dialog is the media library's; Files and Folders for the rest.
+func privacyPane(for path: String) -> PrivacyPane {
+    ["Music", "Movies"].contains((path as NSString).lastPathComponent) ? .mediaLibrary : .filesAndFolders
+}
+
+/// Opens System Settings at the pane, falling back to Privacy & Security.
+func openPrivacySettings(_ pane: PrivacyPane) {
+    let fallback = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension"
+    for address in pane.addresses + [fallback] {
+        if let url = URL(string: address), NSWorkspace.shared.open(url) { return }
+    }
 }
 
 // MARK: - Remembering grants

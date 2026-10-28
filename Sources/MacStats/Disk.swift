@@ -362,12 +362,21 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     /// The row under the mouse, or -1, and the tracking area that follows it.
     private var hoveredRow = -1
     private var rowHover: NSTrackingArea?
+    /// The folders the person has granted, remembered for this build of the app.
+    let grants = GrantStore()
+    /// What `grants` held when last read: in `init`, before each measurement and on each click.
+    private var granted = GrantSet()
+    /// The folders being measured after a Grant click, as canonical paths; their rows spin.
+    private var granting: Set<String> = []
+    /// Counts the lists shown, so a folder measured into one list is not shown in a newer one.
+    private var listsShown = 0
 
     init() {
         super.init(title: "Disk")
         setHeaderButtons(leading: headerButton("arrow.clockwise", "Measure again", #selector(refreshAll)),
                          trailing: headerButton("internaldrive", "Open Storage settings", #selector(openStorageSettings)))
         build()
+        granted = grants.load()
         loadSavedMeasurement()
     }
 
@@ -446,7 +455,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         for text in [measuring, status, remeasuring] {
             text.font = .systemFont(ofSize: 10)
             text.textColor = .tertiaryLabelColor
-            text.hoverTip = twoLines("Private folders are never opened; ≥ means at least. Double-click to show in Finder.")
+            text.hoverTip = twoLines("Private folders stay closed unless you grant one; ≥ means at least.")
         }
         measuring.preferredMaxLayoutWidth = Panel.width - 24
         remeasuring.font = NSFontManager.shared.convert(.systemFont(ofSize: 10), toHaveTrait: .italicFontMask)
@@ -510,18 +519,27 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     /// Measures the folders again. The last measurement stays on screen until the new
     /// one replaces it; only with none to show does the list wait, empty, for the first.
+    /// The private folders it opens are the granted ones, read again now: a rebuilt app's
+    /// grants start empty, so it opens none until one is clicked.
     func measureFolders() {
         guard !scanning else { return }
         scanning = true
+        granted = grants.load()
+        let granted = granted
         spinner.startAnimation(nil)
         updateStatus()
         DispatchQueue.global(qos: .utility).async {
-            let measured = scanFolders(dataVolume)
+            let measured = scanFolders(dataVolume, granted: granted)
             DispatchQueue.main.async {
                 self.scanning = false
                 self.spinner.stopAnimation(nil)
+                // A granted folder it could not open offers System Settings, and its grant is dropped.
+                for path in refusedGrants(measured, granted: granted) { self.grants.remove(folder: path) }
+                self.granted = self.grants.load()
                 self.show(measured, at: Date())
                 self.saveMeasurement()
+                // A folder granted while this measurement ran is not in it: measure it into it.
+                for folder in self.granted.folders.subtracting(granted.folders) { self.measureGrant(folder) }
             }
         }
     }
@@ -529,15 +547,20 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     func show(_ measured: [Entry], at time: Date) {
         folders = measured
         measuredAt = time
+        listsShown += 1
         endHover()
         outline.reloadData()
-        // Open the biggest branch, so its third level shows.
+        expandBiggestBranch()
+        updateStatus()
+    }
+
+    /// Opens the biggest branch, so its third level shows.
+    private func expandBiggestBranch() {
         var next = folders.first
         while let folder = next, !folder.children.isEmpty {
             outline.expandItem(folder)
             next = folder.children.first
         }
-        updateStatus()
     }
 
     // The last measurement is kept in the app's cache folder, so a restart (a login,
@@ -553,14 +576,17 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         try? data.write(to: url, options: .atomic)
     }
 
+    /// A folder the saved measurement shows open but this build has no grant for (after a
+    /// rebuild) shows as private again, as the next measurement will show it.
     private func loadSavedMeasurement() {
         guard let url = Self.savedMeasurementURL, let data = try? Data(contentsOf: url),
               let saved = try? JSONDecoder().decode(SavedMeasurement.self, from: data) else { return }
-        show(saved.folders, at: saved.measuredAt)
+        closeUngranted(saved.folders, granted: granted)
+        show(saved.folders.sorted(by: isLarger), at: saved.measuredAt)
     }
 
     private func updateStatus() {
-        let privacy = "Private folders are never opened; ≥\u{00A0}means at least."
+        let privacy = "Private folders stay closed unless you grant one; ≥\u{00A0}means at least."
         // The measuring note fills the list only while there is nothing to show yet.
         measuringNote.isHidden = !(scanning && folders.isEmpty)
         measuring.stringValue = "Measuring folders, about a minute… " + privacy
@@ -611,12 +637,21 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
             // Reused for row after row: everything is set again, and the button starts hidden.
             let cell = outlineView.makeView(withIdentifier: id, owner: self) as? SizeCell
                 ?? SizeCell(identifier: id, target: self, action: #selector(grantClicked(_:)))
+            let measuring = entry.path.map { granting.contains(canonicalPath($0)) } ?? false
             cell.textField?.stringValue = entry.sizeText
             cell.textField?.textColor = entry.note == nil ? .labelColor : .tertiaryLabelColor
-            cell.showsGrant = canGrant(entry)
-            cell.hoverTip = entry.note == "private" && !cell.showsGrant
-                ? twoLines("macOS has no dialog for this folder; Finder's Get Info gives its size.") : nil
-            cell.setGrantVisible(false, animated: false)
+            cell.showsGrant = canGrant(entry) && !measuring
+            if entry.refused {
+                // macOS asks only once; after a no, Grant opens System Settings, where it is allowed.
+                // No break inside "Privacy & Security".
+                cell.hoverTip = twoLines("Allowed in System Settings › Privacy\u{00A0}&\u{00A0}Security › "
+                                         + privacyPane(for: entry.path ?? "").title)
+                if cell.showsGrant { cell.button.hoverTip = cell.hoverTip }
+            } else {
+                cell.hoverTip = entry.note == "private" && !canGrant(entry)
+                    ? twoLines("macOS has no dialog for this folder; Finder's Get Info gives its size.") : nil
+            }
+            cell.measuring = measuring  // hides the button too
             return cell
         }
         let cell = outlineView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? {
@@ -652,8 +687,76 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         entry.note != nil && (entry.note == "private" || entry.refused) && grantKind(for: entry.path ?? "") == .dialog
     }
 
-    /// Does nothing yet: the next change opens the folder and measures it.
-    @objc private func grantClicked(_ sender: NSButton) {}
+    /// Grant means "measure this folder now": the folder is remembered as granted and measured
+    /// on its own, and macOS shows its dialog the first time. On a folder macOS refused, it
+    /// opens System Settings instead, since macOS never asks twice; the folder stays granted,
+    /// so the next measurement opens it if the person allows it there. The panel stays open,
+    /// except for System Settings.
+    @objc private func grantClicked(_ sender: NSButton) {
+        guard let entry = outline.item(atRow: outline.row(for: sender)) as? Entry, let path = entry.path,
+              canGrant(entry) else { return }
+        grants.add(folder: path)
+        granted = grants.load()
+        if entry.refused {
+            orderOut(nil)
+            openPrivacySettings(privacyPane(for: path))
+            return
+        }
+        measureGrant(path)
+    }
+
+    /// Measures a granted folder on its own, off the main thread, its row spinning meanwhile,
+    /// and splices it into the list. The work runs on a copy of the list, so no row changes
+    /// while the outline reads it; the copy is shown only if no full measurement replaced the
+    /// list meanwhile, and otherwise the folder is measured again into the newer list if it is
+    /// still private there. If the panel closes first, the result shows when it next opens.
+    private func measureGrant(_ path: String) {
+        let key = canonicalPath(path)
+        guard !granting.contains(key), let entry = listedEntry(at: key), entry.note == "private",
+              let data = try? JSONEncoder().encode(folders),
+              let copy = try? JSONDecoder().decode([Entry].self, from: data) else { return }
+        granting.insert(key)
+        sizeCell(at: outline.row(forItem: entry))?.measuring = true
+        let list = listsShown
+        let granted = granted
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = grant(path, in: copy, granted: granted)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.granting.remove(key)
+                // A refusal shows as no access; a folder that is gone shows nothing new.
+                if outcome != .measured {
+                    self.grants.remove(folder: path)
+                    self.granted = self.grants.load()
+                }
+                if self.listsShown == list {
+                    if outcome != .unchanged { self.folders = copy }
+                } else if outcome == .measured {
+                    self.measureGrant(path)
+                    if self.granting.contains(key) { return }  // still spinning
+                }
+                self.folders.sort(by: isLarger)
+                self.endHover()
+                self.outline.reloadData()
+                self.expandBiggestBranch()
+                self.saveMeasurement()
+                self.fitToContents()
+            }
+        }
+    }
+
+    /// The listed folder at `path`, in either spelling.
+    private func listedEntry(at path: String) -> Entry? {
+        let wanted = canonicalPath(path)
+        func find(_ entries: [Entry]) -> Entry? {
+            for entry in entries {
+                if let entryPath = entry.path, canonicalPath(entryPath) == wanted { return entry }
+                if let found = find(entry.children) { return found }
+            }
+            return nil
+        }
+        return find(folders)
+    }
 
     // The tracking area on the outline sends its events to the panel; other entered and
     // exited events go on as before.
