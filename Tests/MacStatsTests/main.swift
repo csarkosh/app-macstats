@@ -405,6 +405,23 @@ test("lists external volumes with their used and total bytes") {
     // With no external disk the flag prints nothing; that is a pass too.
 }
 
+test("knows which build it is") {
+    let build = try fields(try macStats("--grants").lines, "build")?.first ?? ""
+    check(matches(build, "^[0-9a-f]{40,}$") || build == "unsigned", "a cdhash or unsigned, got \(build)")
+}
+
+test("forgets grants made by another build") {
+    let suite = "sh.csarko.MacStats.tests.\(UUID().uuidString.prefix(8))"
+    defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+    try macStats("--grants", "--defaults-suite", suite, "--as-build", "aaa", "--add-folder", "/Users/alice/Downloads", "--set-removable", "true")
+    let same = try macStats("--grants", "--defaults-suite", suite, "--as-build", "aaa").lines
+    checkEqual(fields(same, "folder")?.first, "/Users/alice/Downloads", "remembered in the same build")
+    checkEqual(fields(same, "removable")?.first, "true", "removable remembered")
+    let other = try macStats("--grants", "--defaults-suite", suite, "--as-build", "bbb").lines
+    check(fields(other, "folder") == nil, "a different build starts with no folder grants")
+    checkEqual(fields(other, "removable")?.first, "false", "nor volume grants")
+}
+
 test("ships the menu bar items' order, CPU to Disk from the left") {
     let rows = try macStats("--item-positions").lines.map { $0.components(separatedBy: "\t") }
     checkEqual(rows.map { $0[0] }, ["MacStatsCPU", "MacStatsGPU", "MacStatsRAM", "MacStatsTemp", "MacStatsDisk"], "the names")

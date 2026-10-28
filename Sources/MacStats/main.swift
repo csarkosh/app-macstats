@@ -25,7 +25,8 @@
 //   MacStats --power-level <W>              # prints the power tier: normal, moderate or high
 //   MacStats --spaces                       # prints the disk's five volume spaces
 //   MacStats --volumes                      # prints each external disk: name, used, total, mount point, state
-//   MacStats --legend                     # prints the Disk panel's Spaces rows, in order
+//   MacStats --grants [--defaults-suite <name>] [--as-build <id>] [--add-folder <path>] [--set-removable true|false]  # prints the build and the remembered grants, after any writes
+//   MacStats --legend                   # prints the Disk panel's Spaces rows, in order
 //   MacStats --report [folder] [--min-mb N] [--granted <path>]… [--then-grant <path>]  # prints the Disk panel's folders, opening the granted ones; --then-grant measures that folder alone afterwards and splices it in
 //   MacStats --read-measurement <file|->    # prints the folders of a saved measurement (- reads standard input)
 //   MacStats --grantable <path>             # prints dialog, none or "not private": whether a private row gets Grant
@@ -258,9 +259,26 @@ if arguments.contains("--spaces") {
     exit(spaces.isEmpty ? 1 : 0)
 }
 if arguments.contains("--volumes") {
+    let granted = GrantStore().load()  // only reads defaults; no volume is opened
     for volume in externalVolumes() {
-        print([volume.name, String(volume.used), String(volume.total), volume.mountPoint, "private"].joined(separator: "\t"))
+        let open = volume.isNetwork ? granted.networkVolumes : granted.removableVolumes
+        print([volume.name, String(volume.used), String(volume.total), volume.mountPoint, open ? "granted" : "private"].joined(separator: "\t"))
     }
+    exit(0)
+}
+if arguments.contains("--grants") {
+    // Reads and writes defaults only; never opens a folder. The options are for the tests.
+    let build = argument(after: "--as-build") ?? GrantStore.buildIdentity()
+    let store = GrantStore(
+        defaults: argument(after: "--defaults-suite").flatMap { UserDefaults(suiteName: $0) } ?? UserDefaults(suiteName: GrantStore.suite)!,
+        build: build)
+    if let folder = argument(after: "--add-folder") { store.add(folder: folder) }
+    if let value = argument(after: "--set-removable") { store.set(removableVolumes: value == "true") }
+    let granted = store.load()
+    print("build\t" + build)
+    for folder in granted.folders.sorted() { print("folder\t" + folder) }
+    print("removable\t\(granted.removableVolumes)")
+    print("network\t\(granted.networkVolumes)")
     exit(0)
 }
 if let path = argument(after: "--grantable") {

@@ -3,6 +3,7 @@
 // the file system, so deciding never causes a macOS privacy prompt.
 
 import Foundation
+import Security
 
 /// How a private row at some path is treated: `dialog` when opening the folder once makes
 /// macOS ask, and a yes lets MacStats measure it from then on; `none` when it stays private
@@ -116,4 +117,92 @@ func grant(
 /// True when the entry or anything below it has a note (private or no access).
 func hasUnmeasured(_ entry: Entry) -> Bool {
     entry.note != nil || entry.children.contains(where: hasUnmeasured)
+}
+
+// MARK: - Remembering grants
+
+/// The folders and disks the person has let MacStats open, kept in the app's defaults and
+/// tied to the build that asked. macOS ties a permission to the app's code signature, and an
+/// ad-hoc signed build gets a new signature every time it is built, so after a rebuild macOS
+/// asks again the next time a folder is opened. Grants made by another build therefore count
+/// as not given: the next measurement skips those folders instead of prompting without a click.
+final class GrantStore {
+    static let suite = "sh.csarko.MacStats"
+
+    private enum Key {
+        static let folders = "grantedFolders"
+        static let removable = "removableVolumesGranted"
+        static let network = "networkVolumesGranted"
+        static let build = "grantsBuild"
+    }
+
+    private let defaults: UserDefaults
+    private let build: String
+
+    /// The running code's cdhash as hex; "unsigned" when there is none.
+    static func buildIdentity() -> String {
+        var code: SecCode?
+        var staticCode: SecStaticCode?
+        var info: CFDictionary?
+        guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess, let code,
+              SecCodeCopyStaticCode(code, SecCSFlags(), &staticCode) == errSecSuccess, let staticCode,
+              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: 0)  /* kSecCSDefaultFlags */, &info) == errSecSuccess,
+              let values = info as? [String: Any],
+              let unique = values[kSecCodeInfoUnique as String] as? Data, !unique.isEmpty else { return "unsigned" }
+        return unique.map { String(format: "%02x", $0) }.joined()
+    }
+
+    init(defaults: UserDefaults = UserDefaults(suiteName: GrantStore.suite)!, build: String = GrantStore.buildIdentity()) {
+        self.defaults = defaults
+        self.build = build
+    }
+
+    /// Empty when the stored build differs from this one. Nothing is erased: the next write
+    /// stores this build's identity and replaces the old grants.
+    func load() -> GrantSet {
+        guard defaults.string(forKey: Key.build) == build else { return GrantSet() }
+        return GrantSet(
+            folders: Set(defaults.stringArray(forKey: Key.folders) ?? []),
+            removableVolumes: defaults.bool(forKey: Key.removable),
+            networkVolumes: defaults.bool(forKey: Key.network))
+    }
+
+    func add(folder: String) {
+        var current = load()
+        current.folders.insert(key(for: folder))
+        save(current)
+    }
+
+    func remove(folder: String) {
+        var current = load()
+        current.folders.remove(key(for: folder))
+        save(current)
+    }
+
+    func set(removableVolumes: Bool) {
+        var current = load()
+        current.removableVolumes = removableVolumes
+        save(current)
+    }
+
+    func set(networkVolumes: Bool) {
+        var current = load()
+        current.networkVolumes = networkVolumes
+        save(current)
+    }
+
+    /// The canonical path without a trailing slash ("/" stays).
+    private func key(for folder: String) -> String {
+        var path = canonicalPath(folder)
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        return path
+    }
+
+    /// Stores the whole set and this build's identity, so a write after a rebuild starts clean.
+    private func save(_ granted: GrantSet) {
+        defaults.set(granted.folders.sorted(), forKey: Key.folders)
+        defaults.set(granted.removableVolumes, forKey: Key.removable)
+        defaults.set(granted.networkVolumes, forKey: Key.network)
+        defaults.set(build, forKey: Key.build)
+    }
 }
