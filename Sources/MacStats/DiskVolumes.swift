@@ -358,7 +358,14 @@ extension DiskPanel {
         let queue = clicked ? DispatchQueue.global(qos: .userInitiated) : volumeQueue
         queue.async { [weak self] in
             let granted = store.load()
-            var measurement = clicked || granted.volumes.contains(volume.uuid) ? measureGranted(target, granted: granted) : nil
+            var measurement: GrantMeasurement?
+            if clicked {
+                measurement = measureGranted(target, granted: granted)
+            } else if granted.volumes.contains(volume.uuid) {
+                // The job may have waited behind another disk, and a different disk at the same mount point was never granted.
+                measurement = externalVolume(mountedAt: volume.mountPoint)?.uuid == volume.uuid
+                    ? measureGranted(target, granted: granted) : .unchanged
+            }
             if case .measured? = measurement, externalVolume(mountedAt: volume.mountPoint)?.uuid != volume.uuid {
                 measurement = nil
             }

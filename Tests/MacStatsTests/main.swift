@@ -587,6 +587,18 @@ test("opens only what a granted Music held at the click") {
     checkEqual(inside, ["Old | 2 MB"], "only the folder named at the click")
 }
 
+test("keeps a granted Music under the cut when a folder inside it was left out") {
+    // Music holds 0.5 MB that was asked about, plus `New`, which the click never asked about.
+    // Music is under the 1 MB cut, but its row stays: it is a minimum, and the row is where its
+    // Grant button and tooltip live. (`Other` keeps Users and alice over the cut, as a real home is.)
+    let dir = try tempDir("snapshot-small")
+    try writeTree(dir, [("Users/alice/Other/c.bin", 2), ("Users/alice/Music/Old/a.bin", 0.5), ("Users/alice/Music/New/b.bin", 0.5)])
+    let music = dir.path + "/Users/alice/Music"
+    let lines = try macStats("--report", dir.path, "--min-mb", "1", "--granted", music, "--snapshot", music + "=Old").lines
+        .map { $0.replacingOccurrences(of: "\t", with: " | ") }
+    checkEqual(lines, ["Users | ≥ 3 MB", "  alice | ≥ 3 MB", "    Other | 2 MB", "    Music | ≥ 1 MB"], "the rows")
+}
+
 test("keeps refused and droppedUnmeasured through a save, and leaves out a 1.0.0 Volumes row") {
     let json = #"{"measuredAt":0,"folders":["#
         + #"{"title":"Volumes","path":"/System/Volumes/Data/Volumes","bytes":7000000},"#

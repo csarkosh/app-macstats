@@ -342,14 +342,16 @@ func scanTree(
         }
     }
 
-    // Keep what is big enough, every private folder, and unreadable folders in a
-    // home (the Trash, say); a folder unreadable elsewhere belongs to the system.
+    // Keep what is big enough, every private folder, unreadable folders in a home (the Trash,
+    // say; a folder unreadable elsewhere belongs to the system), and any folder whose scan
+    // left parts out or met a refusal, however small: its row is where the Grant button and
+    // the System Settings tooltip are.
     // A folder dropped while something unmeasured is inside it is remembered on its parent
     // (`parent` is nil at the top), so a later splice can keep the parent's ≥.
     var droppedAtTop = false
     func keep(_ list: [Entry], in parent: Entry?) -> [Entry] {
         list.filter { entry in
-            let kept = entry.bytes >= minimumBytes || entry.note == "private"
+            let kept = entry.bytes >= minimumBytes || entry.note == "private" || entry.leftOut || entry.refused
                 || (entry.note != nil && (entry.path ?? "").hasPrefix(users + "/"))
             // `partial` covers a private folder below the listed depth, which has no row.
             if !kept && (hasUnmeasured(entry) || entry.partial) {
