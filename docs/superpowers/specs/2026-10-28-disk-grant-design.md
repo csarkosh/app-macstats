@@ -259,3 +259,21 @@ the guarded part (the folder itself for Downloads, a subfolder for Music).
 - Order of work; a reasonable one is: volumes section without Grant (visible value, no prompt) →
   `grantKind` + `--grantable` → hover button → the grant flow and splice → remembering grants →
   docs and previews.
+
+## Amendments made during execution (2026-10-28)
+
+The build changed four things above, each for the "no prompt without a click" anti-goal:
+
+- **Volume grants are per disk, not per kind.** A click grants that disk's UUID; a second disk needs
+  its own click (macOS already holds the permission, so no dialog appears). The whole-kind flag
+  could have been set by a disk macOS does not guard (a mounted disk image), after which the next
+  real USB disk would have prompted unasked.
+- **Music and Movies grants carry a snapshot** of the folder's first-level children at the click;
+  automatic remeasurements skip anything added later (the row shows `≥` and offers Grant again),
+  because the subfolder macOS guards may not exist until the Music or TV app first runs.
+- **The build identity is the code's designated requirement**, not its cdhash: a Developer-ID
+  update keeps its grants, an ad-hoc rebuild re-asks after a click.
+- **Automatic disk scans have their own queue**, and disks are listed with `getfsstat(MNT_NOWAIT)`,
+  so a hung share never blocks the startup disk's measurement or the panel.
+Refusals (home folders and disks) are remembered per build so the first Grant click after a
+refusal opens System Settings. `/Volumes` rows from 1.0.0 saved files are dropped on load.
