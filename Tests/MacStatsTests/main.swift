@@ -406,14 +406,14 @@ test("lists external volumes with their used and total bytes") {
 }
 
 test("knows which build it is") {
-    let build = try fields(try macStats("--grants").lines, "build")?.first ?? ""
+    let build = fields(try macStats("--grants").lines, "build")?.first ?? ""
     check(matches(build, "^[0-9a-f]{40,}$") || build == "unsigned", "a cdhash or unsigned, got \(build)")
 }
 
 test("forgets grants made by another build") {
     let suite = "sh.csarko.MacStats.tests.\(UUID().uuidString.prefix(8))"
     defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-    try macStats("--grants", "--defaults-suite", suite, "--as-build", "aaa", "--add-folder", "/Users/alice/Downloads", "--set-removable", "true")
+    _ = try macStats("--grants", "--defaults-suite", suite, "--as-build", "aaa", "--add-folder", "/Users/alice/Downloads", "--set-removable", "true")
     let same = try macStats("--grants", "--defaults-suite", suite, "--as-build", "aaa").lines
     checkEqual(fields(same, "folder")?.first, "/Users/alice/Downloads", "remembered in the same build")
     checkEqual(fields(same, "removable")?.first, "true", "removable remembered")

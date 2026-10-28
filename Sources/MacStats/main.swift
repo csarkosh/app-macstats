@@ -268,14 +268,18 @@ if arguments.contains("--volumes") {
 }
 if arguments.contains("--grants") {
     // Reads and writes defaults only; never opens a folder. The options are for the tests.
-    let build = argument(after: "--as-build") ?? GrantStore.buildIdentity()
-    let store = GrantStore(
-        defaults: argument(after: "--defaults-suite").flatMap { UserDefaults(suiteName: $0) } ?? UserDefaults(suiteName: GrantStore.suite)!,
-        build: build)
+    var store = GrantStore()
+    if let name = argument(after: "--defaults-suite") {
+        // A suite that will not open stops here, so a typo never writes the real grants.
+        guard let defaults = UserDefaults(suiteName: name) else { fail("--defaults-suite: cannot open \(name)") }
+        store = GrantStore(defaults: defaults, build: argument(after: "--as-build") ?? store.build)
+    } else if let build = argument(after: "--as-build") {
+        store = GrantStore(build: build)
+    }
     if let folder = argument(after: "--add-folder") { store.add(folder: folder) }
     if let value = argument(after: "--set-removable") { store.set(removableVolumes: value == "true") }
     let granted = store.load()
-    print("build\t" + build)
+    print("build\t" + store.build)
     for folder in granted.folders.sorted() { print("folder\t" + folder) }
     print("removable\t\(granted.removableVolumes)")
     print("network\t\(granted.networkVolumes)")

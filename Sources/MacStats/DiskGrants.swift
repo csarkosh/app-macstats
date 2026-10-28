@@ -137,7 +137,17 @@ final class GrantStore {
     }
 
     private let defaults: UserDefaults
-    private let build: String
+    /// The build whose grants this store counts.
+    let build: String
+
+    /// The app's own defaults. The bundled app's identifier is exactly `suite`, and macOS
+    /// refuses to open a suite named like the app itself, so the app uses its standard
+    /// defaults; the bare binary opens the suite. Both read and write the same
+    /// `sh.csarko.MacStats` domain.
+    static var defaultDefaults: UserDefaults {
+        if Bundle.main.bundleIdentifier == suite { return .standard }
+        return UserDefaults(suiteName: suite) ?? .standard
+    }
 
     /// The running code's cdhash as hex; "unsigned" when there is none.
     static func buildIdentity() -> String {
@@ -152,7 +162,7 @@ final class GrantStore {
         return unique.map { String(format: "%02x", $0) }.joined()
     }
 
-    init(defaults: UserDefaults = UserDefaults(suiteName: GrantStore.suite)!, build: String = GrantStore.buildIdentity()) {
+    init(defaults: UserDefaults = GrantStore.defaultDefaults, build: String = GrantStore.buildIdentity()) {
         self.defaults = defaults
         self.build = build
     }
