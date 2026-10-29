@@ -31,14 +31,26 @@ which builds MacStats on your Mac, puts it in `~/Applications`, and starts it no
 login (a "Background Items Added" notice from macOS is information only), or
 
 ```sh
+brew install --cask csarkosh/tap/macstats    # the signed and notarized app, in /Applications
+open -a MacStats                             # add it in Login Items to start it at every login
+```
+
+or, built on your Mac by Homebrew and run as a service,
+
+```sh
 brew install csarkosh/tap/macstats
 brew services start macstats
 ```
 
-Use one or the other, or two copies run. To remove: `install.sh --uninstall` (the script again
-with that flag), or `brew services stop macstats && brew uninstall macstats`. No Homebrew, Xcode
-or Developer ID is needed for the first route: the app is built on your Mac, so macOS runs it
-without a word.
+Homebrew 6 and later install from a tap like this only once you trust it. The full name, as
+above, trusts that one package. If you ran `brew tap csarkosh/tap` first and Homebrew answers
+`Refusing to load formula csarkosh/tap/macstats from untrusted tap csarkosh/tap`, run
+`brew trust --formula csarkosh/tap/macstats` (or `--cask`, as the error says) and try again.
+
+Use one of these, or two copies run. To remove: `install.sh --uninstall` (the script again with
+that flag), `brew uninstall --cask macstats`, or `brew services stop macstats && brew uninstall
+macstats`. No Homebrew, Xcode or Developer ID is needed for the first route: the app is built on
+your Mac, so macOS runs it without a word.
 
 Right-click any item for Quit. The items sit wherever macOS puts them; drag one with ⌘ held to
 move it.

@@ -96,6 +96,9 @@ not click. The tests keep their grants in a throwaway suite (`MACSTATS_DEFAULTS_
    downloaded, no build and no quarantine step.
 2. In `csarkosh/homebrew-tap`, point `Formula/macstats.rb` at the new tag's tarball
    (`https://github.com/csarkosh/app-macstats/archive/refs/tags/v<version>.tar.gz`) with its
-   `sha256` (`curl -fsSL <url> | shasum -a 256`), and push. (The formula still builds from
-   source; a cask over the notarized zip would spare the Command Line Tools.)
+   `sha256` (`curl -fsSL <url> | shasum -a 256`), and set `Casks/macstats.rb`'s `version` and
+   `sha256` to the notarized zip's (the release's `MacStats-<version>-arm64.zip.sha256`). Check
+   the cask with `brew style --cask` and `brew audit --cask --online --strict` on
+   `csarkosh/tap/macstats`, then push. The formula builds from source; the cask installs the
+   notarized app.
 3. `install.sh` installs the latest release by itself; nothing to update there.
