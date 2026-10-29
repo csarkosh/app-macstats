@@ -74,7 +74,12 @@ frequency* is each core type's clock speed against its own top speed, so a line 
 means those cores ran flat out. Each has its legend under it: `Load 31% of cores`, `P-cores 3.68
 of 4.46 GHz`.
 
-**Top processes**: the eight busiest, as `ps` counts them, refreshed every two seconds. The
+**Top processes**: the eight busiest, as `ps` counts them, refreshed every two seconds. Beside
+a name that says little (eight rows of `node`), a fainter note says what it runs and where:
+the package or script and the folder it works in, `vitest · game-dayhike`. Resting on a row
+shows its command line and what started it (`Started by npm run test, under claude and
+Arkos IDE, in ~/Projects/game-dayhike`). A Claude Code session shows the title Claude Code
+gave it instead, `Film handoff review · Projects`, and says whether it is working. The
 header's icon opens Activity Monitor.
 
 </td>
@@ -98,7 +103,7 @@ machine-learning cores are) and Memory (the GPU's memory in use as a share of th
 lets it use, `0.49 / 11.84 GB`), each with a small three-minute graph.
 
 **Top GPU apps**: each app's share of GPU time over the last two seconds, as Activity Monitor's
-"% GPU" counts it.
+"% GPU" counts it, with the same note and tooltip as the CPU panel's.
 
 </td>
 </tr>
@@ -118,7 +123,8 @@ same colours as the rows under it; then Used with a bar, a row per part, and Swa
 graph of the last three minutes against the Mac's memory. The figures are the ones Activity
 Monitor and Stats show.
 
-**Top processes**: the eight using the most memory.
+**Top processes**: the eight using the most memory, each with the same note and tooltip as
+the CPU panel's.
 
 </td>
 </tr>

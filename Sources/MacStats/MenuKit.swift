@@ -653,3 +653,293 @@ class StatsPanel: NSWindow, NSWindowDelegate {
     }
 
 }
+
+// MARK: - What a process is doing
+
+// The Top processes rows of the CPU, RAM and GPU panels. A name like "node" says nothing
+// about which work is running. The kernel tells any program, without a permission, a
+// process's command line and environment (KERN_PROCARGS2), the folder it works in
+// (proc_pidinfo) and its parent (KERN_PROC_PID), for processes of the same user; another
+// user's (root's services) keep them private.
+
+/// The process's arguments, `argv`, and its environment, or none when they cannot be read.
+/// A process that renamed itself (npm's "npm run test") shows its title as the first
+/// argument.
+func processLaunch(_ pid: Int32) -> (arguments: [String], environment: [String: String]) {
+    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+    var size = 0
+    guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return ([], [:]) }
+    var buffer = [UInt8](repeating: 0, count: size)
+    guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return ([], [:]) }
+    // The count, the executable's path, padding, then that many arguments, then the
+    // environment's NAME=value strings, each ending in NUL; an empty string ends them.
+    let count = Int(buffer.withUnsafeBytes { $0.load(as: Int32.self) })
+    var index = MemoryLayout<Int32>.size
+    while index < size, buffer[index] != 0 { index += 1 }
+    while index < size, buffer[index] == 0 { index += 1 }
+    let next = { () -> String in
+        let end = buffer[index..<size].firstIndex(of: 0) ?? size
+        defer { index = end + 1 }
+        return String(decoding: buffer[index..<end], as: UTF8.self)
+    }
+    var arguments: [String] = []
+    while arguments.count < count, index < size { arguments.append(next()) }
+    var environment: [String: String] = [:]
+    while index < size {
+        let entry = next()
+        guard !entry.isEmpty, let equals = entry.firstIndex(of: "=") else { break }
+        environment[String(entry[..<equals])] = String(entry[entry.index(after: equals)...])
+    }
+    return (arguments, environment)
+}
+
+/// The process's arguments alone (see processLaunch).
+func processArguments(_ pid: Int32) -> [String] { processLaunch(pid).arguments }
+
+/// The folder the process works in, or nil when it cannot be read.
+func processFolder(_ pid: Int32) -> String? {
+    var info = proc_vnodepathinfo()
+    guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, Int32(MemoryLayout<proc_vnodepathinfo>.size)) > 0 else { return nil }
+    let path = withUnsafePointer(to: &info.pvi_cdir.vip_path) {
+        $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+    }
+    return path.isEmpty ? nil : path
+}
+
+/// The process's parent and its short name from the kernel's table, or nil when it is gone.
+func processParent(_ pid: Int32) -> (parent: Int32, name: String)? {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.size
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0, info.kp_proc.p_pid == pid else { return nil }
+    let name = withUnsafePointer(to: &info.kp_proc.p_comm) {
+        $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXCOMLEN) + 1) { String(cString: $0) }
+    }
+    return (info.kp_eproc.e_ppid, name)
+}
+
+/// A process's name from its first argument: the title it gave itself ("npm run test"),
+/// the app whose bundle holds its executable ("Arkos IDE" for arkosd), or the
+/// executable's name.
+func commandName(_ first: String) -> String {
+    if !first.contains("/") { return first }
+    let parts = first.split(separator: "/").map(String.init)
+    if let app = parts.last(where: { $0.hasSuffix(".app") }) { return String(app.dropLast(4)) }
+    return (first as NSString).lastPathComponent
+}
+
+/// A process's name as the panel shows it: the app's, the title it gave itself, its
+/// executable's name, or the kernel's short name.
+func processName(_ pid: Int32) -> String? {
+    if let app = NSRunningApplication(processIdentifier: pid)?.localizedName { return app }
+    if let first = processArguments(pid).first, !first.isEmpty { return commandName(first) }
+    return processParent(pid)?.name
+}
+
+private let shellNames: Set<String> = ["sh", "bash", "zsh", "fish", "dash", "tcsh", "csh", "ksh", "login"]
+
+/// What a process runs, from its arguments: the package under `node_modules` it runs
+/// ("vitest"), else the first argument that is not an option: a script's name, a
+/// subcommand ("build") or a shell's command. Nil when the arguments say nothing.
+func processWork(_ arguments: [String], name: String) -> String? {
+    guard let first = arguments.first else { return nil }
+    if first.contains(" "), !first.contains("/") { return first == name ? nil : first }  // a title the process set
+    let rest = arguments.dropFirst().filter { !$0.isEmpty }
+    for argument in rest {
+        let parts = argument.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard let modules = parts.lastIndex(of: "node_modules"), modules + 1 < parts.count else { continue }
+        var package = parts[modules + 1]
+        if package == ".bin", modules + 2 < parts.count { package = parts[modules + 2] }
+        if package.hasPrefix("@"), modules + 2 < parts.count { package += "/" + parts[modules + 2] }
+        return package
+    }
+    for argument in rest where !argument.hasPrefix("-") {
+        if argument.range(of: "^[A-Za-z_][A-Za-z0-9_]*=", options: .regularExpression) != nil { continue }  // VAR=value
+        // A path's last part; a shell's command ("sleep 30; true") whole.
+        let base = argument.contains("/") && !argument.contains(" ") ? (argument as NSString).lastPathComponent : argument
+        if base.isEmpty || base == name { continue }
+        return base.count > 60 ? String(base.prefix(59)) + "…" : base
+    }
+    return nil
+}
+
+/// The folder's name, or nil for the root or the home folder (every shell starts there).
+func processFolderName(_ folder: String?) -> String? {
+    guard let folder, folder != "/", folder != NSHomeDirectory() else { return nil }
+    let name = (folder as NSString).lastPathComponent
+    return name.isEmpty ? nil : name
+}
+
+/// What started a process: its ancestors' names, without the shells between them and
+/// without its own name again, up to the app they run in ("npm run test", "npm run gate",
+/// "claude", "Arkos IDE") or launchd. (A command-line tool can register as a running
+/// application too, npm does; an app is one with a bundle.)
+func processAncestors(_ pid: Int32, name: String) -> [String] {
+    var names: [String] = []
+    var current = pid
+    for _ in 0..<16 {
+        guard let (parent, _) = processParent(current), parent > 1 else { break }
+        current = parent
+        let app = NSRunningApplication(processIdentifier: parent)
+        guard let parentName = app?.localizedName ?? processName(parent) else { break }
+        if !shellNames.contains(parentName), parentName != name, parentName != names.last { names.append(parentName) }
+        if app?.bundleIdentifier != nil { break }
+    }
+    return names
+}
+
+// MARK: Claude Code sessions
+
+/// A Claude Code session: its title and whether it is working. Every session runs as
+/// "claude" in a folder, often the same one, so its title is what tells them apart.
+struct ClaudeSession {
+    let title: String?
+    let busy: Bool
+}
+
+/// The Claude Code session a process runs, or nil for any other process. Claude Code
+/// keeps a record of each running session in its settings folder (`~/.claude`, or the
+/// process's CLAUDE_CONFIG_DIR), `sessions/<pid>.json`, naming the session; the session's
+/// transcript, `projects/<folder>/<session>.jsonl`, holds the title Claude Code gives it,
+/// updated as the work goes on. A name set by hand wins over the given title.
+func claudeSession(_ pid: Int32, environment: [String: String]) -> ClaudeSession? {
+    let home = NSHomeDirectory()
+    let settings = environment["CLAUDE_CONFIG_DIR"].map { ($0 as NSString).standardizingPath } ?? home + "/.claude"
+    // Only a hidden folder in the home folder (or the temporary folder, for the tests):
+    // a settings folder in Documents or Desktop would make macOS ask for access.
+    let temporary = (NSTemporaryDirectory() as NSString).standardizingPath
+    guard settings.hasPrefix(home + "/.") || settings.hasPrefix(temporary + "/") else { return nil }
+    guard let data = FileManager.default.contents(atPath: settings + "/sessions/\(pid).json"),
+          let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          (record["pid"] as? NSNumber)?.int32Value == pid, let session = record["sessionId"] as? String
+    else { return nil }
+    var title = ClaudeTitles.shared.title(session: session, settings: settings, folder: record["cwd"] as? String)
+    if let name = record["name"] as? String, !name.isEmpty, let source = record["nameSource"] as? String, source != "derived" {
+        title = name
+    }
+    return ClaudeSession(title: title, busy: record["status"] as? String == "busy")
+}
+
+/// Each session's latest title, read from its transcript. The transcript only grows (to
+/// megabytes), so it is read once and then only from where the last read stopped.
+final class ClaudeTitles {
+    static let shared = ClaudeTitles()
+    private struct Transcript { var path: String; var offset: UInt64 = 0; var given: String?; var custom: String? }
+    private var transcripts: [String: Transcript] = [:]
+    /// When a session's transcript was last looked for and not found (it is written at
+    /// the first message): not looked for again for half a minute.
+    private var missing: [String: Date] = [:]
+    private let lock = NSLock()
+
+    func title(session: String, settings: String, folder: String?) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var transcript = transcripts[session] ?? find(session, settings: settings, folder: folder) else { return nil }
+        if let handle = FileHandle(forReadingAtPath: transcript.path) {
+            defer { try? handle.close() }
+            try? handle.seek(toOffset: transcript.offset)
+            if let data = try? handle.readToEnd(), let end = data.lastIndex(of: UInt8(ascii: "\n")) {
+                // Only whole lines; a line being written is read next time.
+                transcript.offset += UInt64(end - data.startIndex + 1)
+                for line in data[data.startIndex...end].split(separator: UInt8(ascii: "\n")) {
+                    guard line.count < 4096, line.range(of: Data("-title\"".utf8)) != nil,
+                          let entry = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+                    if entry["type"] as? String == "ai-title", let title = entry["aiTitle"] as? String { transcript.given = title }
+                    if entry["type"] as? String == "custom-title", let title = entry["customTitle"] as? String { transcript.custom = title }
+                }
+            }
+        }
+        transcripts[session] = transcript
+        return (transcript.custom ?? transcript.given).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// The transcript sits in a folder named after the session's folder, every character
+    /// but letters and digits a dash; a session that moved keeps it under its first folder,
+    /// so the other folders are looked in too.
+    private func find(_ session: String, settings: String, folder: String?) -> Transcript? {
+        if let since = missing[session], Date().timeIntervalSince(since) < 30 { return nil }
+        let projects = settings + "/projects"
+        let file = session + ".jsonl"
+        var candidates: [String] = []
+        if let folder {
+            candidates.append(String(folder.map { $0.isLetter || $0.isNumber ? $0 : "-" }))
+        }
+        candidates += (try? FileManager.default.contentsOfDirectory(atPath: projects)) ?? []
+        for name in candidates where FileManager.default.fileExists(atPath: "\(projects)/\(name)/\(file)") {
+            missing[session] = nil
+            return Transcript(path: "\(projects)/\(name)/\(file)")
+        }
+        missing[session] = Date()
+        return nil
+    }
+}
+
+private func shortenHome(_ path: String) -> String {
+    let home = NSHomeDirectory()
+    return path.hasPrefix(home + "/") || path == home ? "~" + path.dropFirst(home.count) : path
+}
+
+/// Cuts a line to just under the width at which the tooltip wraps, ending it in an ellipsis.
+private func fitTooltipLine(_ text: String) -> String {
+    let limit = tooltipWrapWidth - 4
+    guard tooltipWidth(text) > limit else { return text }
+    var line = String(text.prefix(200))
+    while !line.isEmpty, tooltipWidth(line + "…") > limit { line.removeLast() }
+    return line.trimmingCharacters(in: .whitespaces) + "…"
+}
+
+/// The panel's detail and tooltip for a process: "vitest · game-dayhike" beside its name,
+/// and a tooltip of its command line (paths relative to its folder, the home folder as
+/// ~), then "Started by npm run test, under claude and Arkos IDE, in ~/Projects/game-dayhike".
+/// A Claude Code session shows its title instead ("Film handoff review · Projects"), and
+/// whether it is working in place of its command line. An app, named well already and
+/// rarely started in a folder that means anything, shows no folder beside its name.
+func describeProcess(_ pid: Int32, name: String) -> (detail: String, tooltip: String) {
+    let folder = processFolder(pid)
+    let launch = processLaunch(pid)
+    let isClaude = name == "claude" || launch.arguments.first.map(commandName) == "claude"
+    let claude = isClaude ? claudeSession(pid, environment: launch.environment) : nil
+    let isApp = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier != nil
+    // Paths in the arguments relative to the folder, or with the home folder as ~; the
+    // empty arguments a process that renamed itself leaves behind dropped.
+    let shorten = { (argument: String) -> String in
+        if let folder, folder != "/", argument.hasPrefix(folder + "/") { return String(argument.dropFirst(folder.count + 1)) }
+        return shortenHome(argument)
+    }
+    var arguments = launch.arguments
+    if !arguments.isEmpty { arguments = [arguments[0]] + arguments.dropFirst().filter { !$0.isEmpty }.map(shorten) }
+    let work = claude?.title ?? processWork(arguments, name: name)
+    let detail = [work, isApp ? nil : processFolderName(folder)].compactMap { $0 }.joined(separator: " · ")
+    var command = arguments.first.map { ([commandName($0)] + arguments.dropFirst()).joined(separator: " ") }
+        ?? "Runs as another user, so its command line is private."
+    if let claude {
+        command = "Claude Code, " + (claude.busy ? "working" : "idle") + (claude.title.map { ": " + $0 } ?? "")
+    }
+    // The nearest ancestor, then at most the two outermost: the app and what it ran.
+    var ancestors = processAncestors(pid, name: name)
+    if ancestors.count > 3 { ancestors = [ancestors[0]] + ancestors.suffix(2) }
+    var started: String
+    switch ancestors.count {
+    case 0: started = "Started by macOS (launchd)"
+    case 1: started = "Started by " + ancestors[0]
+    case 2: started = "Started by \(ancestors[0]), under \(ancestors[1])"
+    default: started = "Started by \(ancestors[0]), under \(ancestors[1]) and \(ancestors[2])"
+    }
+    // The folder, whole if the line has room for it, else by its name alone.
+    if let folder, let name = processFolderName(folder) {
+        let line = ["\(started), in \(shortenHome(folder))", "\(started), in \(name)"].first { tooltipWidth($0) <= tooltipWrapWidth - 4 }
+        started = line ?? started
+    }
+    return (detail, fitTooltipLine(command) + "\n" + fitTooltipLine(started))
+}
+
+/// Prints what a Top processes row would say of one process: its name, the detail beside it and its
+/// tooltip's lines. Exit 1 when there is no such process.
+func processReport(_ pid: Int32) -> Int32 {
+    guard let name = processName(pid) else { return 1 }
+    let (detail, tooltip) = describeProcess(pid, name: name)
+    print("Name\t" + name)
+    print("Detail\t" + detail)
+    for line in tooltip.split(separator: "\n") { print("Tooltip\t" + line) }
+    return 0
+}

@@ -233,6 +233,11 @@ struct CPUProcess {
     let pid: Int32
     let name: String
     let usage: Double  // percent of one core, as ps reports it
+    /// What the process is doing, beside its name: the script or package it runs and the
+    /// folder it works in ("vitest · game-dayhike"). Empty when nothing is known.
+    let detail: String
+    /// The row's tooltip: its command line, then what started it and where.
+    let tooltip: String
 }
 
 /// The processes using the CPU most, as Stats lists them: `ps`'s %CPU, which macOS
@@ -245,7 +250,8 @@ func topCPUProcesses(_ count: Int = 8) -> [CPUProcess] {
         guard fields.count == 3, let pid = Int32(fields[0]), let usage = Double(fields[1].replacingOccurrences(of: ",", with: "."))
         else { return nil }
         let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? String(fields[2])
-        return CPUProcess(pid: pid, name: name, usage: usage)
+        let (detail, tooltip) = describeProcess(pid, name: name)
+        return CPUProcess(pid: pid, name: name, usage: usage, detail: detail, tooltip: tooltip)
     }
 }
 
@@ -563,10 +569,13 @@ final class CPUPanel: StatsPanel {
         let processes = topCPUProcesses(processRows.count)
         for (index, row) in processRows.enumerated() {
             guard index < processes.count else { row.isHidden = true; continue }
+            let process = processes[index]
             row.isHidden = false
-            row.icon.image = processIcon(processes[index].pid)
-            row.name.stringValue = processes[index].name
-            row.value.stringValue = String(format: "%.1f%%", processes[index].usage)
+            row.icon.image = processIcon(process.pid)
+            row.name.stringValue = process.name
+            row.detail.stringValue = process.detail
+            row.value.stringValue = String(format: "%.1f%%", process.usage)
+            row.hoverTip = process.tooltip
         }
         if isVisible { fitToContents() }
     }
@@ -601,6 +610,6 @@ func cpuReport() -> Int32 {
     print("Cores")
     for type in coreTypes { print(type.name + "\t" + String(type.cores.count) + "\t" + type.steps.map { formatMHz($0) }.joined(separator: ",")) }
     print("Top processes")
-    for process in topCPUProcesses() { print(process.name + "\t" + String(format: "%.1f%%", process.usage)) }
+    for process in topCPUProcesses() { print(process.name + "\t" + String(format: "%.1f%%", process.usage) + "\t" + process.detail) }
     return 0
 }

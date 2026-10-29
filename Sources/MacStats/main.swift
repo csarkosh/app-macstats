@@ -247,6 +247,10 @@ if let directory = argument(after: "--write-icon") {
 if arguments.contains("--cpu") {
     exit(cpuReport())
 }
+if let pid = argument(after: "--process") {
+    guard let pid = Int32(pid) else { fail("usage: --process <pid>") }
+    exit(processReport(pid))
+}
 if arguments.contains("--gpu") {
     exit(gpuReport())
 }

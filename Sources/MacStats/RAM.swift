@@ -95,7 +95,10 @@ func topProcesses(_ count: Int = 8) -> [ProcessMemory] {
         let words = line.split(separator: " ", omittingEmptySubsequences: true)
         guard words.count >= 3, let pid = Int32(words[0]), let bytes = topBytes(String(words[words.count - 1])) else { return nil }
         let command = words[1..<(words.count - 1)].joined(separator: " ")
-        return ProcessMemory(pid: pid, name: NSRunningApplication(processIdentifier: pid)?.localizedName ?? command, bytes: bytes)
+        // `top` names a process by its executable's file, cut to 16 characters: "Google
+        // Chrome He", or "2.1.312" for a tool kept in a folder per version. The name it
+        // was started by says more.
+        return ProcessMemory(pid: pid, name: processName(pid) ?? command, bytes: bytes)
     }
 }
 
@@ -205,10 +208,12 @@ final class MemoryChart: NSView {
     }
 }
 
-/// A Top Processes row: the process's icon, its name and its memory, as in Stats.
+/// A Top Processes row: the process's icon, its name, a fainter detail of what it is
+/// doing (the CPU panel fills it) and its figure, as in Stats.
 final class ProcessRow: NSView {
     let icon = NSImageView()
     let name = NSTextField(labelWithString: "")
+    let detail = NSTextField(labelWithString: "")
     let value = NSTextField(labelWithString: "")
 
     init() {
@@ -217,13 +222,18 @@ final class ProcessRow: NSView {
         name.font = .systemFont(ofSize: 12)
         name.textColor = .secondaryLabelColor
         name.lineBreakMode = .byTruncatingTail
+        detail.font = .systemFont(ofSize: 11)
+        detail.textColor = .tertiaryLabelColor
+        detail.lineBreakMode = .byTruncatingTail
         value.font = .systemFont(ofSize: 12)
         value.alignment = .right
-        for view in [icon, name, value] as [NSView] {
+        for view in [icon, name, detail, value] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
-        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // When the row runs short, the detail gives way first, then the name.
+        name.setContentCompressionResistancePriority(.defaultLow + 1, for: .horizontal)
+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: Panel.row),
             widthAnchor.constraint(equalToConstant: Panel.width),
@@ -233,13 +243,27 @@ final class ProcessRow: NSView {
             icon.heightAnchor.constraint(equalToConstant: 14),
             name.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
             name.centerYAnchor.constraint(equalTo: centerYAnchor),
+            detail.leadingAnchor.constraint(equalTo: name.trailingAnchor, constant: 6),
+            detail.firstBaselineAnchor.constraint(equalTo: name.firstBaselineAnchor),
             value.trailingAnchor.constraint(equalTo: trailingAnchor),
             value.centerYAnchor.constraint(equalTo: centerYAnchor),
-            value.leadingAnchor.constraint(greaterThanOrEqualTo: name.trailingAnchor, constant: 8),
+            value.leadingAnchor.constraint(greaterThanOrEqualTo: detail.trailingAnchor, constant: 8),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Shows the process: its icon, its name, what it is doing beside the name and, on
+    /// hover, its command line and what started it (see describeProcess).
+    func show(_ pid: Int32, name: String, value: String) {
+        let (detail, tooltip) = describeProcess(pid, name: name)
+        isHidden = false
+        icon.image = processIcon(pid)
+        self.name.stringValue = name
+        self.detail.stringValue = detail
+        self.value.stringValue = value
+        hoverTip = tooltip
+    }
 }
 
 final class RAMPanel: StatsPanel {
@@ -324,10 +348,7 @@ final class RAMPanel: StatsPanel {
                 for (index, row) in self.processRows.enumerated() {
                     guard index < processes.count else { row.isHidden = true; continue }
                     let process = processes[index]
-                    row.isHidden = false
-                    row.icon.image = processIcon(process.pid)
-                    row.name.stringValue = process.name
-                    row.value.stringValue = formatMemory(process.bytes)
+                    row.show(process.pid, name: process.name, value: formatMemory(process.bytes))
                 }
             }
         }
@@ -354,7 +375,8 @@ func memoryReport() -> Int32 {
     print("Total\t" + formatMemory(usage.total) + "\t" + String(Int64(usage.total)))
     print("Top processes")
     for process in topProcesses() {
-        print(process.name + "\t" + formatMemory(process.bytes) + "\t" + String(Int64(process.bytes)))
+        let detail = describeProcess(process.pid, name: process.name).detail
+        print(process.name + "\t" + formatMemory(process.bytes) + "\t" + String(Int64(process.bytes)) + "\t" + detail)
     }
     return 0
 }

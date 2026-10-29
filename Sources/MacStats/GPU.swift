@@ -451,10 +451,7 @@ final class GPUPanel: StatsPanel {
         noApps.isHidden = !apps.isEmpty
         for (index, row) in appRows.enumerated() {
             guard index < apps.count else { row.isHidden = true; continue }
-            row.isHidden = false
-            row.icon.image = processIcon(apps[index].pid)
-            row.name.stringValue = apps[index].name
-            row.value.stringValue = String(format: "%.1f%%", apps[index].share * 100)
+            row.show(apps[index].pid, name: apps[index].name, value: String(format: "%.1f%%", apps[index].share * 100))
         }
         if isVisible { fitToContents() }
     }
@@ -485,6 +482,8 @@ func gpuReport() -> Int32 {
     print("Model\t" + (info?.model ?? "Unknown"))
     print("Cores\t" + (info?.cores.map(String.init) ?? "Unknown"))
     print("Top GPU apps")
-    for app in apps.sample() { print(app.name + "\t" + String(format: "%.1f%%", app.share * 100)) }
+    for app in apps.sample() {
+        print(app.name + "\t" + String(format: "%.1f%%", app.share * 100) + "\t" + describeProcess(app.pid, name: app.name).detail)
+    }
     return 0
 }

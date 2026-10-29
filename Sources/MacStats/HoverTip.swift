@@ -12,6 +12,10 @@ import Cocoa
 
 private var hoverTipKey: UInt8 = 0
 
+/// Past this width a tooltip's line wraps. Lines stay under tooltipLineWidth, except a
+/// process row's command line, which is cut to this instead.
+let tooltipWrapWidth: CGFloat = 320
+
 extension NSView {
     /// What the panel's tooltip says while the mouse rests on this view: at most two short
     /// lines (see twoLines). Setting the same text again does nothing; new text shows at
@@ -72,7 +76,7 @@ final class HoverTips {
         label.textColor = .labelColor
         label.maximumNumberOfLines = 0
         label.lineBreakMode = .byWordWrapping
-        label.preferredMaxLayoutWidth = 320
+        label.preferredMaxLayoutWidth = tooltipWrapWidth
         background.addSubview(label)
         window.contentView = background
     }

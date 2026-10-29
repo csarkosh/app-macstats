@@ -256,7 +256,8 @@ test("explains every legend key with a tooltip, and keeps every tooltip to two l
         let (panel, kind, name, lines, widest, text) = (tip[0], tip[1], tip[2], Int(tip[3]) ?? 0, Int(tip[4]) ?? 0, tip[5])
         if kind == "key" { check(text.count >= 20, "\(panel) › \(name) explains itself (\(text.debugDescription))") }
         if name == "NSTableCellView" { continue }  // a folder's path
-        check(lines <= 2 && widest <= 240, "\(panel) › \(name) fits two lines: \(lines) lines, \(widest) pt")
+        // A process row's command line may run to the width at which the tooltip wraps.
+        check(lines <= 2 && widest <= (name == "ProcessRow" ? 320 : 240), "\(panel) › \(name) fits two lines: \(lines) lines, \(widest) pt")
     }
 }
 
@@ -285,6 +286,68 @@ test("reads the CPU: System, User and Idle add up, each core type, load, clock s
     let processes = section(lines, "Top processes").map { number($0[1]) }
     check(!processes.isEmpty, "lists processes")
     check(zip(processes, processes.dropFirst()).allSatisfy { $0 >= $1 }, "the busiest first")
+    check(section(lines, "Top processes").allSatisfy { $0.count == 3 }, "each process has a name, its usage and a detail")
+}
+
+test("says what a process is doing: its command, its folder and what started it") {
+    // A shell told to run two commands keeps running itself (one command it would hand over to).
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("MacStats Work \(getpid())")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let shell = Process()
+    shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+    shell.arguments = ["-c", "sleep 30; true"]
+    shell.currentDirectoryURL = folder
+    shell.standardOutput = FileHandle.nullDevice
+    try shell.run()
+    defer { shell.terminate() }
+    let report = try macStats("--process", String(shell.processIdentifier)).lines.map { $0.components(separatedBy: "\t") }
+    let field = { (title: String) in report.filter { $0.count == 2 && $0[0] == title }.map { $0[1] } }
+    checkEqual(field("Name"), ["sh"], "the shell's name")
+    checkEqual(field("Detail"), ["sleep 30; true · MacStats Work \(getpid())"], "its command and its folder")
+    let tooltip = field("Tooltip")
+    checkEqual(tooltip.count, 2, "a two-line tooltip")
+    checkEqual(tooltip.first, "sh -c sleep 30; true", "the command line")
+    // The folder follows the ancestors only when the line has room for it (it depends on
+    // what runs the tests), so the detail above is where it is checked.
+    check(tooltip.last?.hasPrefix("Started by MacStatsTests") == true, "started by this program: \(tooltip.last ?? "")")
+    checkEqual(try macStats("--process", "2147483000", ok: false).status, 1, "no such process")
+}
+
+test("names a Claude Code session by its title") {
+    // A stand-in "claude" (a copy of sleep) with its own settings folder, as Claude Code
+    // keeps them: a record of the running session, and a transcript whose latest title wins.
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("MacStats Claude \(getpid())")
+    let settings = base.appendingPathComponent("settings"), work = base.appendingPathComponent("Work Folder")
+    try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let claude = base.appendingPathComponent("claude")
+    try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: claude.path)
+    let session = Process()
+    session.executableURL = claude
+    session.arguments = ["30"]
+    session.currentDirectoryURL = work
+    session.environment = ["CLAUDE_CONFIG_DIR": settings.path]
+    try session.run()
+    defer { session.terminate() }
+    let pid = session.processIdentifier
+    // The transcript under another folder's name, as for a session that moved.
+    let transcripts = settings.appendingPathComponent("projects/-elsewhere")
+    try FileManager.default.createDirectory(at: transcripts, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: settings.appendingPathComponent("sessions"), withIntermediateDirectories: true)
+    let record = #"{"pid":\#(pid),"sessionId":"test-session","cwd":"\#(work.path)","status":"busy","name":"x-1","nameSource":"derived"}"#
+    try record.write(to: settings.appendingPathComponent("sessions/\(pid).json"), atomically: true, encoding: .utf8)
+    let transcript = [
+        #"{"type":"user","message":{"content":"a -title\" that is not one"}}"#,
+        #"{"type":"ai-title","aiTitle":"First title","sessionId":"test-session"}"#,
+        #"{"type":"ai-title","aiTitle":"Fix the login page","sessionId":"test-session"}"#,
+    ].joined(separator: "\n") + "\n"
+    try transcript.write(to: transcripts.appendingPathComponent("test-session.jsonl"), atomically: true, encoding: .utf8)
+    let report = try macStats("--process", String(pid)).lines.map { $0.components(separatedBy: "\t") }
+    let field = { (title: String) in report.filter { $0.count == 2 && $0[0] == title }.map { $0[1] } }
+    checkEqual(field("Name"), ["claude"], "the session's name")
+    checkEqual(field("Detail"), ["Fix the login page · Work Folder"], "its latest title and its folder")
+    checkEqual(field("Tooltip").first, "Claude Code, working: Fix the login page", "whether it is working, and its title")
 }
 
 test("reads the GPU: utilization, renderer, tiler, memory, model and the apps using it") {
