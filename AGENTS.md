@@ -94,11 +94,15 @@ not click. The tests keep their grants in a throwaway suite (`MACSTATS_DEFAULTS_
    identity and App Store Connect key as `ide-arkos`; the files live in
    `~/.config/arkos-release/`, outside every repository). The zip opens on any Mac as
    downloaded, no build and no quarantine step.
+   It also keeps the Homebrew cask on the release: `homebrew/macstats.rb` is the cask's text
+   (edit it there, never in the tap); `scripts/cask.sh` sets its version and the notarized zip's
+   sha256, committed as `Cask: macstats <version>` beside the release commit (and left out of the
+   notes), and after the GitHub release `scripts/tap.sh` publishes it to the tap as
+   `Casks/macstats.rb`, with `HOMEBREW_TAP_DEPLOY_KEY` (the private half of a deploy key that can
+   write to `csarkosh/homebrew-tap` alone). If that step fails, the release is out and only the
+   cask lags: run `sh scripts/tap.sh <version>` from main (`DRY_RUN=1` shows the change first).
 2. In `csarkosh/homebrew-tap`, point `Formula/macstats.rb` at the new tag's tarball
    (`https://github.com/csarkosh/app-macstats/archive/refs/tags/v<version>.tar.gz`) with its
-   `sha256` (`curl -fsSL <url> | shasum -a 256`), and set `Casks/macstats.rb`'s `version` and
-   `sha256` to the notarized zip's (the release's `MacStats-<version>-arm64.zip.sha256`). Check
-   the cask with `brew style --cask` and `brew audit --cask --online --strict` on
-   `csarkosh/tap/macstats`, then push. The formula builds from source; the cask installs the
-   notarized app.
+   `sha256` (`curl -fsSL <url> | shasum -a 256`), and push. The formula builds from source; the
+   cask, which the release has already published, installs the notarized app.
 3. `install.sh` installs the latest release by itself; nothing to update there.
