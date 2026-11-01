@@ -34,5 +34,7 @@ cask "macstats" do
     System Settings > General > Login Items. Right-click any item in the menu bar for Quit.
     This cask, the macstats formula and MacStats' own installer (curl | sh) are three ways in:
     use one, or two copies run.
+
+    Buy me tokens: https://donate.csarko.sh/macstats
   EOS
 end
