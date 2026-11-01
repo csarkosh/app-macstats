@@ -245,6 +245,8 @@ screenshots above come from `scripts/previews.sh`; the one at the top is a scree
 screen's top with the CPU panel open, cut and faded by `scripts/compose-hero.swift --finish`. See [AGENTS.md](AGENTS.md) for how the pieces
 fit and how a release is made.
 
+[<img src="https://donate.csarko.sh/icon.svg" alt="" height="16"> Buy me tokens](https://donate.csarko.sh/macstats)
+
 ## Credits and licence
 
 MIT; see [LICENSE](LICENSE). `SMC.swift` and `SensorCatalog.swift` are adapted from
