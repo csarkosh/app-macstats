@@ -1,0 +1,104 @@
+<h2>The Disk panel with Grant and your SSD</h2>
+<p class="subtitle">Left: before any grant. Hover a grey <i>private</i> row to see the button appear with the transition (150 ms in, 75 ms out, Material's standard curve). Right: after you granted the SSD.</p>
+
+<style>
+  .ms { width: 280px; background: #5f6267; color: #f2f2f2; border-radius: 12px; padding: 10px 8px 12px;
+        font: 13px -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+  .ms .head { display: flex; justify-content: space-between; align-items: center; padding: 2px 6px 8px; font-size: 17px; font-weight: 500; }
+  .ms .head span.i { color: #cfd0d2; font-size: 15px; }
+  .ms .sep { display: flex; align-items: center; gap: 8px; margin: 8px 0 6px; color: #b9bbbe; font-size: 11px; letter-spacing: .12em; }
+  .ms .sep::before, .ms .sep::after { content: ""; flex: 1; height: 1px; background: #8a8d91; }
+  .ms .row { display: flex; align-items: center; height: 22px; padding: 0 6px; border-radius: 5px; position: relative; }
+  .ms .row.hov:hover, .ms .row.hovered { background: rgba(255,255,255,.08); }
+  .ms .row .t { flex: 1; color: #e4e5e7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ms .row .v { color: #f2f2f2; font-variant-numeric: tabular-nums; }
+  .ms .row .v.p { color: #a3a5a8; }
+  .ms .row.d1 { padding-left: 26px; } .ms .row.d2 { padding-left: 46px; } .ms .row.d3 { padding-left: 66px; }
+  .ms .row .chev { width: 14px; color: #d0d1d3; font-size: 10px; display: inline-block; }
+  .ms .bar { height: 12px; border-radius: 6px; background: #7d8085; margin: 4px 6px 8px; display: flex; overflow: hidden; }
+  .ms .bar i { display: block; height: 100%; }
+  .ms .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 10px; }
+  .ms .status { color: #b9bbbe; font-size: 12px; padding: 0 6px 4px; }
+  /* The Grant button: appears in the size column when the row is hovered. */
+  .ms .grant { position: absolute; right: 6px; top: 2px; height: 18px; padding: 0 9px; border-radius: 9px;
+        background: #3a7bf6; color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; border: 0;
+        opacity: 0; transform: translateY(1px); pointer-events: none;
+        transition: opacity 75ms cubic-bezier(.4,0,.2,1), transform 75ms cubic-bezier(.4,0,.2,1); }
+  .ms .row.hov:hover .grant, .ms .row.hovered .grant { opacity: 1; transform: none; pointer-events: auto;
+        transition: opacity 150ms cubic-bezier(.4,0,.2,1), transform 150ms cubic-bezier(.4,0,.2,1); }
+  .ms .row.hov:hover .v.p, .ms .row.hovered .v.p { opacity: 0; transition: opacity 75ms cubic-bezier(.4,0,.2,1); }
+  .ms .row.hov .v.p { transition: opacity 150ms cubic-bezier(.4,0,.2,1); }
+  .ms .row .v.p.keep { opacity: 1 !important; margin-right: 56px; }
+  .note { font-size: 13px; color: #666; max-width: 280px; margin-top: 10px; line-height: 1.4; }
+  .pair { display: flex; gap: 36px; flex-wrap: wrap; align-items: flex-start; }
+</style>
+
+<div class="pair">
+<div>
+<div class="ms">
+  <div class="head"><span class="i">↻</span>Disk<span class="i">▭</span></div>
+
+  <div class="sep">SPACES</div>
+  <div class="row"><span class="t">Used:</span><span class="v">170.4 GB</span></div>
+  <div class="bar"><i style="width:57%;background:#3a7bf6"></i><i style="width:5%;background:#f0963c"></i><i style="width:4%;background:#f2c43d"></i><i style="width:3%;background:#f25a7a"></i><i style="width:1%;background:#b457e0"></i></div>
+  <div class="row"><span class="dot" style="background:#3a7bf6"></span><span class="t">my apps / files:</span><span class="v">138.7 GB</span></div>
+  <div class="row"><span class="dot" style="background:#f0963c"></span><span class="t">macOS system:</span><span class="v">12.6 GB</span></div>
+  <div class="row"><span class="dot" style="background:#9a9c9f"></span><span class="t">Free:</span><span class="v">74.7 GB</span></div>
+  <div class="status" style="padding-left:28px;color:#8e9093">… the other rows as today</div>
+
+  <div class="sep">MY APPS / FILES</div>
+  <div class="status">Last measured at 11:33 AM.</div>
+  <div class="row"><span class="chev">⌄</span><span class="t">Users</span><span class="v">≥ 61.4 GB</span></div>
+  <div class="row d1"><span class="chev">⌄</span><span class="t">alice</span><span class="v">≥ 61.4 GB</span></div>
+  <div class="row d2"><span class="t">Projects</span><span class="v">28.6 GB</span></div>
+  <div class="row d2"><span class="t">Library</span><span class="v">≥ 14.2 GB</span></div>
+  <div class="row d2 hov"><span class="t">Documents</span><span class="v p">private</span><button class="grant">Grant</button></div>
+  <div class="row d2 hov hovered"><span class="t">Downloads</span><span class="v p">private</span><button class="grant">Grant</button></div>
+  <div class="row d2 hov"><span class="t">Desktop</span><span class="v p">private</span><button class="grant">Grant</button></div>
+  <div class="row d2 hov"><span class="t">Movies</span><span class="v p">private</span><button class="grant">Grant</button></div>
+  <div class="row d2"><span class="t">Library/Mail</span><span class="v p">private</span></div>
+  <div class="row"><span class="chev">›</span><span class="t">Applications</span><span class="v">19.8 GB</span></div>
+  <div class="row"><span class="chev">›</span><span class="t">Library</span><span class="v">7.6 GB</span></div>
+
+  <div class="sep">CYRUSEXTSSD</div>
+  <div class="row"><span class="t">Used:</span><span class="v">85.2 GB of 1.8 TB</span></div>
+  <div class="bar"><i style="width:5%;background:#3a7bf6"></i></div>
+  <div class="row hov"><span class="t">Folders</span><span class="v p">private</span><button class="grant">Grant</button></div>
+</div>
+<p class="note"><b>Before.</b> "Downloads" is drawn in its hovered state so you can see the button; the others react to your mouse. Mail stays plain grey: it has no Grant, as agreed. The SSD's used and free space show with no permission at all; only its folders wait for a grant.</p>
+</div>
+
+<div>
+<div class="ms">
+  <div class="head"><span class="i">↻</span>Disk<span class="i">▭</span></div>
+  <div class="status" style="text-align:center;color:#8e9093;padding:6px 0 2px">… Spaces and My apps / files as before …</div>
+
+  <div class="sep">CYRUSEXTSSD</div>
+  <div class="row"><span class="t">Used:</span><span class="v">85.2 GB of 1.8 TB</span></div>
+  <div class="bar"><i style="width:5%;background:#3a7bf6"></i></div>
+  <div class="status">Last measured at 1:52 PM.</div>
+  <div class="row"><span class="chev">›</span><span class="t">sdd-archive</span><span class="v">35.0 GB</span></div>
+  <div class="row"><span class="chev">›</span><span class="t">dayhike-lab</span><span class="v">24.1 GB</span></div>
+  <div class="row"><span class="chev">›</span><span class="t">fps-evidence</span><span class="v">9.6 GB</span></div>
+  <div class="row"><span class="chev">›</span><span class="t">film-media</span><span class="v">8.8 GB</span></div>
+  <div class="row"><span class="chev">›</span><span class="t">arkos-lab</span><span class="v">4.2 GB</span></div>
+  <div class="row"><span class="chev">›</span><span class="t">asset-gen-media</span><span class="v">1.7 GB</span></div>
+  <div class="row"><span class="chev">›</span><span class="t">electron-gamepatch-lab</span><span class="v">1.2 GB</span></div>
+</div>
+<p class="note"><b>After Grant.</b> Clicking Grant made MacStats open the drive once; macOS showed its usual dialog ("MacStats would like to access files on a removable volume"). On Allow, MacStats measured the drive and shows its folders three levels deep, like the startup disk. The permission sticks, so later measurements never ask again. The same happens for Documents, Downloads, Desktop, Movies and Music in their rows. Unplug the drive and its section goes away; plug it back and it returns, measured.</p>
+</div>
+</div>
+
+<h3 style="margin-top:28px">One choice: where does the button sit?</h3>
+<div class="options">
+  <div class="option" data-choice="replace" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content"><h3>Grant replaces the word "private"</h3><p>As drawn above: the grey word fades out and the button fades in, in the size column.</p></div>
+  </div>
+  <div class="option" data-choice="beside" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content"><h3>Grant appears beside "private"</h3><p>The word stays; the button slides in to its left. Busier row, but nothing disappears under the mouse.</p>
+      <div class="ms" style="width:260px;margin-top:8px;padding:4px 6px"><div class="row hov hovered"><span class="t">Downloads</span><span class="v p keep">private</span><button class="grant" style="right:62px">Grant</button></div></div>
+    </div>
+  </div>
+</div>

@@ -1,7 +1,7 @@
 # Disk panel: Grant for private folders, and external disks
 
 Design, 2026-10-28. Agreed with Cyrus in conversation; the mockup he approved is
-`.superpowers/brainstorm/32158-1793212106/content/panel-grant.html` (option A).
+`docs/superpowers/brainstorm/32158-1793212106/content/panel-grant.html` (option A).
 
 ## Intent
 
