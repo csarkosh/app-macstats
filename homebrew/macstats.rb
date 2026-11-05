@@ -1,6 +1,6 @@
 cask "macstats" do
-  version "1.2.1"
-  sha256 "a05e2e073a7ced63305d8197bfbd18d13761296f915b0a5d25f46f3d5b295be1"
+  version "1.2.2"
+  sha256 "d59aa0dd2277f61c3b437bae9e7f95bdb12dc0d7cd384c9151e3b276676f7a0a"
 
   url "https://github.com/csarkosh/app-macstats/releases/download/v#{version}/MacStats-#{version}-arm64.zip"
   name "MacStats"
