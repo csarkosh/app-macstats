@@ -334,7 +334,7 @@ extension DiskPanel {
         grants.add(volume: section.volume.uuid)
         granted = grants.load()
         if section.state == .refused {
-            orderOut(nil)
+            dismiss()
             openPrivacySettings(.filesAndFolders)
             return
         }

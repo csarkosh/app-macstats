@@ -91,12 +91,8 @@ final class MenuBarItem: NSObject {
 
     var button: NSStatusBarButton? { item.button }
 
-    func show(_ value: String, tooltip: String, alert: Bool = false) {
-        // AppKit's tooltip, set only when its text changes and not while the pointer is on
-        // the item: setting one again hides and shows it, so one set every second blinks.
-        if let button = item.button, button.toolTip != twoLines(tooltip), !button.isUnderMouse {
-            button.toolTip = twoLines(tooltip)
-        }
+    /// The item has no tooltip: hover text shows only in an open panel (HoverTip.swift).
+    func show(_ value: String, alert: Bool = false) {
         guard value != view.value || alert != view.alert else { return }
         view.value = value
         view.alert = alert
@@ -310,15 +306,6 @@ let tooltipLineWidth: CGFloat = 240
 
 func tooltipWidth(_ line: String) -> CGFloat {
     NSAttributedString(string: line, attributes: [.font: NSFont.toolTipsFont(ofSize: 0)]).size().width
-}
-
-extension NSView {
-    /// Whether the mouse is over the view now.
-    var isUnderMouse: Bool {
-        guard let window else { return false }
-        return bounds.contains(convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil))
-    }
-
 }
 
 func twoLines(_ text: String) -> String {
@@ -586,12 +573,18 @@ class StatsPanel: NSWindow, NSWindowDelegate {
     /// Closes the panel, as a click outside it or on its item does.
     func dismiss() {
         guard isVisible else { return }
-        HoverTips.shared.reset()
         orderOut(nil)
         dismissedAt = Date()
         if let outsideClicks { NSEvent.removeMonitor(outsideClicks) }
         outsideClicks = nil
         if StatsPanel.openPanel === self { StatsPanel.openPanel = nil }
+    }
+
+    /// However the panel goes away, its tooltip goes with it: the tooltip is a window of its
+    /// own, so it would otherwise stay on the screen with no panel under it.
+    override func orderOut(_ sender: Any?) {
+        HoverTips.shared.reset()
+        super.orderOut(sender)
     }
 
     /// Called before the panel opens; a subclass refreshes what it shows.

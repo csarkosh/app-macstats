@@ -88,27 +88,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refresh() {
         if let sample = cpuSampler.sample() {
             cpuHistory.add(sample)
-            let cpuText = cpuItemText(sample)
-            cpu.show(cpuText.value, tooltip: cpuText.tooltip)
+            cpu.show(cpuItemText(sample))
             if cpuPanel.isVisible { cpuPanel.update(sample) }
         }
         if let sample = gpuSampler.sample() {
             gpuHistory.add(sample)
-            let gpuText = gpuItemText(sample)
-            gpu.show(gpuText.value, tooltip: gpuText.tooltip)
+            gpu.show(gpuItemText(sample))
             if gpuPanel.isVisible { gpuPanel.update(sample) }
         }
         if let usage = memoryUsage() {
             memoryHistory.add(usage)
-            let ramText = ramItemText(usage)
-            ram.show(ramText.value, tooltip: ramText.tooltip)
+            ram.show(ramItemText(usage))
             if ramPanel.isVisible { ramPanel.update(usage) }
         }
         let readings = reader.read()
         let tempText = tempItemText(readings)
-        temp.show(tempText.value, tooltip: tempText.tooltip, alert: tempText.alert)
+        temp.show(tempText.value, alert: tempText.alert)
         if tempPanel.isVisible { tempPanel.update(readings) }
-        if let diskText = diskItemText(diskSampler) { disk.show(diskText.value, tooltip: diskText.tooltip) }
+        if let diskText = diskItemText(diskSampler) { disk.show(diskText) }
     }
 }
 
@@ -147,19 +144,19 @@ if arguments.contains("--render") {
         _ = sampler.sample()
         Thread.sleep(forTimeInterval: 0.5)
         guard let sample = sampler.sample() else { fail("Could not read the CPU.") }
-        exit(renderMiniView(label: "CPU", value: cpuItemText(sample).value, widest: percentWidest, to: path))
+        exit(renderMiniView(label: "CPU", value: cpuItemText(sample), widest: percentWidest, to: path))
     case "gpu":
         guard let sample = GPUSampler().sample() else { fail("Could not read the GPU.") }
-        exit(renderMiniView(label: "GPU", value: gpuItemText(sample).value, widest: percentWidest, to: path))
+        exit(renderMiniView(label: "GPU", value: gpuItemText(sample), widest: percentWidest, to: path))
     case "ram":
         guard let usage = memoryUsage() else { fail("Could not read memory use.") }
-        exit(renderMiniView(label: "RAM", value: ramItemText(usage).value, widest: percentWidest, to: path))
+        exit(renderMiniView(label: "RAM", value: ramItemText(usage), widest: percentWidest, to: path))
     case "temp":
         let text = tempItemText(SensorReader().read())
         exit(renderMiniView(label: "Temp", value: text.value, widest: temperatureWidest, alert: text.alert || arguments.contains("--alert"), to: path))
     case "disk":
         guard let text = diskItemText(DiskSampler()) else { fail("Could not read the startup disk's capacity.") }
-        exit(renderMiniView(label: "Disk free", value: text.value, widest: diskWidest, to: path))
+        exit(renderMiniView(label: "Disk free", value: text, widest: diskWidest, to: path))
     default: fail("usage: MacStats --render cpu|gpu|ram|temp|disk <out.png>")
     }
 }

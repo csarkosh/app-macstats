@@ -413,9 +413,8 @@ final class MiniChart: NSView {
 let loadColor = NSColor.systemPink
 
 /// What the CPU item shows: its usage.
-func cpuItemText(_ sample: CPUSample) -> (value: String, tooltip: String) {
-    (formatPercent(sample.usage),
-     "CPU \(formatPercent(sample.usage)) busy (\(utilizationWord(sample.usage).lowercased())). Click for more.")
+func cpuItemText(_ sample: CPUSample) -> String {
+    formatPercent(sample.usage)
 }
 
 func formatMHz(_ mhz: Double) -> String { "\(Int(mhz.rounded())) MHz" }

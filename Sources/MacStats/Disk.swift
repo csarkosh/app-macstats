@@ -34,12 +34,10 @@ final class DiskSampler {
 }
 
 /// What the Disk item shows: the free space in whole GB (as Finder counts it, purgeable
-/// space included), and the exact figures for its tooltip.
-func diskItemText(_ sampler: DiskSampler) -> (value: String, tooltip: String)? {
+/// space included).
+func diskItemText(_ sampler: DiskSampler) -> String? {
     guard let figures = sampler.sample() else { return nil }
-    let gb = { (bytes: Int64) in String(format: "%.1f", Double(bytes) / 1_000_000_000) }
-    return ("\(Int((Double(figures.free) / 1_000_000_000).rounded())) GB",
-            "\(gb(figures.free)) GB free of \(gb(figures.total)) GB. Click for where the space goes.")
+    return "\(Int((Double(figures.free) / 1_000_000_000).rounded())) GB"
 }
 
 // MARK: - The five spaces
@@ -675,7 +673,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     }
 
     @objc private func openStorageSettings() {
-        orderOut(nil)
+        dismiss()
         if let url = URL(string: "x-apple.systempreferences:com.apple.settings.Storage") {
             NSWorkspace.shared.open(url)
         }
@@ -684,7 +682,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
     /// A double-click in any folder list, the startup disk's or an external disk's.
     @objc func revealInFinder(_ list: NSOutlineView) {
         guard let entry = list.item(atRow: list.clickedRow) as? Entry, let path = entry.path else { return }
-        orderOut(nil)
+        dismiss()
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
@@ -786,7 +784,7 @@ final class DiskPanel: StatsPanel, NSOutlineViewDataSource, NSOutlineViewDelegat
         grants.add(folder: path, snapshot: isMediaFolder(path) ? folderNames(in: path) : nil)
         granted = grants.load()
         if entry.refused {
-            orderOut(nil)
+            dismiss()
             openPrivacySettings(privacyPane(for: path))
             return
         }

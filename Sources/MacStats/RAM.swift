@@ -71,9 +71,8 @@ let memoryParts: [(title: String, color: NSColor, value: (MemoryUsage) -> Double
 let swapColor = NSColor.systemPurple
 
 /// What the RAM item shows: the share of memory in use.
-func ramItemText(_ usage: MemoryUsage) -> (value: String, tooltip: String) {
-    (String(format: "%.0f%%", usage.used / usage.total * 100),
-     "\(formatMemory(usage.used)) of \(formatMemory(usage.total)) in use. Click for what is using it.")
+func ramItemText(_ usage: MemoryUsage) -> String {
+    String(format: "%.0f%%", usage.used / usage.total * 100)
 }
 
 // MARK: - Top processes

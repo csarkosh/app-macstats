@@ -300,9 +300,8 @@ func drawTimeAxis(in row: NSRect, minutes: Int) {
 }
 
 /// What the GPU item shows: its utilization.
-func gpuItemText(_ sample: GPUSample) -> (value: String, tooltip: String) {
-    (formatPercent(sample.utilization),
-     "GPU \(formatPercent(sample.utilization)) busy (\(utilizationWord(sample.utilization).lowercased())). Click for more.")
+func gpuItemText(_ sample: GPUSample) -> String {
+    formatPercent(sample.utilization)
 }
 
 final class GPUPanel: StatsPanel {

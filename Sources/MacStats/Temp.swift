@@ -5,14 +5,11 @@
 
 import Cocoa
 
-/// What the Temp item shows: the hottest part's temperature, whether that part's row
-/// is red, and the part for its tooltip.
-func tempItemText(_ readings: [Reading]) -> (value: String, tooltip: String, alert: Bool) {
-    guard let hottest = temperatureGroups(readings).first else { return ("–", "No temperature sensors.", false) }
-    let level = heat(of: hottest.name, celsius: hottest.celsius)
-    return (degrees(hottest.celsius, unit: false),
-            "Hottest: \(hottest.name), \(degrees(hottest.celsius)) (\(level.word.lowercased())). Click for every sensor.",
-            level == .hot)
+/// What the Temp item shows: the hottest part's temperature, and whether that part's row
+/// is red.
+func tempItemText(_ readings: [Reading]) -> (value: String, alert: Bool) {
+    guard let hottest = temperatureGroups(readings).first else { return ("–", false) }
+    return (degrees(hottest.celsius, unit: false), heat(of: hottest.name, celsius: hottest.celsius) == .hot)
 }
 
 /// The temperatures, in °C, at which a part turns yellow (warm) and red (hot). Parts

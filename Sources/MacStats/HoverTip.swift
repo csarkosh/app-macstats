@@ -6,7 +6,8 @@
 // set again, and are registered over the part of a view visible when set, which missed
 // views nested in stack views. These find the view under the mouse when it moves.
 //
-// The menu bar items keep AppKit's tooltips: a click on one opens its panel anyway.
+// Tooltips show only in an open panel: the menu bar items have none, and closing a panel,
+// however it closes, hides its tooltip.
 
 import Cocoa
 
